@@ -1,0 +1,166 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    user-select: none;
+}
+
+body {
+    background-color: #0b0c10;
+    color: #fff;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Drop Zone */
+#drop-overlay {
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(circle at center, #1b202e 0%, #08090c 100%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+}
+
+.drop-card {
+    background: rgba(20, 24, 35, 0.85);
+    border: 2px dashed #ff334b;
+    border-radius: 16px;
+    padding: 40px 60px;
+    text-align: center;
+    box-shadow: 0 0 30px rgba(255, 51, 75, 0.2);
+}
+
+.drop-card h1 {
+    font-size: 2.2rem;
+    letter-spacing: 2px;
+    color: #ff4757;
+    margin-bottom: 8px;
+}
+
+.subtitle {
+    color: #a4b0be;
+    margin-bottom: 24px;
+}
+
+#status-box {
+    background: #0f121a;
+    padding: 12px 24px;
+    border-radius: 8px;
+    color: #2ed573;
+    font-weight: bold;
+    display: inline-block;
+    border: 1px solid #2f3542;
+    margin-bottom: 12px;
+}
+
+.hint {
+    font-size: 0.85rem;
+    color: #747d8c;
+}
+
+/* Freeplay Screen */
+#freeplay-screen {
+    width: 100vw;
+    height: 100vh;
+    padding: 30px 50px;
+    display: flex;
+    flex-direction: column;
+    background: radial-gradient(circle at top, #141724 0%, #060709 100%);
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid #2f3542;
+    padding-bottom: 15px;
+    margin-bottom: 20px;
+}
+
+header h2 {
+    font-size: 2rem;
+    letter-spacing: 3px;
+    color: #00d2d3;
+}
+
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.glow-btn {
+    background: #ff4757;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 0 0 15px rgba(255, 71, 87, 0.4);
+    transition: 0.2s;
+}
+
+.glow-btn:hover {
+    background: #ff6b81;
+    transform: scale(1.05);
+}
+
+#song-grid {
+    flex: 1;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    padding-right: 10px;
+}
+
+.song-card {
+    background: #191e2b;
+    border: 1px solid #2f3542;
+    padding: 16px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: 0.2s;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.song-card:hover {
+    border-color: #00d2d3;
+    transform: translateY(-3px);
+    box-shadow: 0 5px 20px rgba(0, 210, 211, 0.2);
+}
+
+.song-card h3 {
+    font-size: 1.25rem;
+    color: #ffffff;
+    margin-bottom: 6px;
+}
+
+.song-meta {
+    font-size: 0.85rem;
+    color: #747d8c;
+    display: flex;
+    justify-content: space-between;
+}
+
+/* Game Viewport */
+#game-container {
+    width: 1280px;
+    height: 720px;
+    border: 2px solid #2f3542;
+    box-shadow: 0 0 40px rgba(0,0,0,0.8);
+    position: relative;
+}
+
+.hidden {
+    display: none !important;
+}
