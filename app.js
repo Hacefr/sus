@@ -101,7 +101,7 @@ async function ingestZip(file) {
         if (path.endsWith('-metadata.json')) {
             const p = entry.async('string').then(text => {
                 try {
-                    const parsed = JSON.parse(text.replace(/\/\/.*$/gm, ''));
+                    const parsed = JSON.parse(text.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, ''));
                     const songName = path.split('/').pop().replace('-metadata.json', '');
                     vsliceMeta[songName] = parsed;
                 } catch(e) {}
@@ -112,7 +112,7 @@ async function ingestZip(file) {
         if (path.endsWith('-chart.json')) {
             const p = entry.async('string').then(text => {
                 try {
-                    const parsed = JSON.parse(text.replace(/\/\/.*$/gm, ''));
+                    const parsed = JSON.parse(text.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, ''));
                     const songName = path.split('/').pop().replace('-chart.json', '');
                     vsliceCharts[songName] = { parsed, path };
                 } catch(e) {}
@@ -123,7 +123,7 @@ async function ingestZip(file) {
         if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json') && !path.endsWith('-metadata.json') && !path.endsWith('-chart.json')) {
             const p = entry.async('string').then(jsonText => {
                 try {
-                    const cleanJson = jsonText.replace(/\/\/.*$/gm, '');
+                    const cleanJson = jsonText.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, '');
                     const parsed = JSON.parse(cleanJson);
                     const songData = parsed.song ? parsed.song : parsed;
 
@@ -306,7 +306,6 @@ function extractMatrix(el) {
     if (el.MX) {
         return new PIXI.Matrix(...el.MX);
     } else if (el.M3D) {
-        // 4x4 matrix conversion to 2D Affine Matrix
         return new PIXI.Matrix(el.M3D[0], el.M3D[1], el.M3D[4], el.M3D[5], el.M3D[12], el.M3D[13]);
     }
     return new PIXI.Matrix();
@@ -476,7 +475,7 @@ class DynamicAtlasCharacter {
         if (this.isPlayer) {
             rootMat.translate(-405, -280);
         } else if (this.isGF) {
-            rootMat.translate(-350, -320); // Center speakers
+            rootMat.translate(-350, -320);
         } else {
             rootMat.translate(-200, -320);
         }
@@ -587,40 +586,62 @@ class PlayStateScene {
         this.stageFront = new PIXI.Container();
 
         if (stageData && stageData.wall) {
-            // 1. Room Background Wall & Floor
+            // PROPORTION CALCULATOR: Fits 1080p artwork to 720p canvas
+            const rawWidth = stageData.wall.width || 1920;
+            const stageScale = 1280 / rawWidth;
+
+            // 1. Wall, Floor & Carpet
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(640, 360);
-            wall.scale.set(1.18);
+            wall.scale.set(stageScale);
             this.stageBack.addChild(wall);
 
-            // 2. Far Left Shelves / Cabinets
+            // 2. Wall Shelf with Party Hat & Frame (props.png)
+            if (stageData.props) {
+                const wallProps = new PIXI.Sprite(stageData.props);
+                wallProps.anchor.set(0.5);
+                wallProps.position.set(640, 360);
+                wallProps.scale.set(stageScale);
+                this.stageBack.addChild(wallProps);
+            }
+
+            // 3. Cabinets (Spans left shelf and right cabinet in 1 image!)
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
-                cabs.anchor.set(0.5, 1.0);
-                cabs.position.set(80, 520);
-                cabs.scale.set(0.75);
+                cabs.anchor.set(0.5);
+                cabs.position.set(640, 360);
+                cabs.scale.set(stageScale);
                 this.stageBack.addChild(cabs);
             }
 
-            // 3. Security Desk / Table with Laptop (Sits behind Noob49)
+            // 4. Security Desk with Laptop & Flower Pot (Snaps right onto desk shadow!)
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
-                desk.anchor.set(0.5, 1.0);
-                desk.position.set(340, 500);
-                desk.scale.set(0.7);
+                desk.anchor.set(0.5);
+                desk.position.set(640, 360);
+                desk.scale.set(stageScale);
                 this.stageBack.addChild(desk);
             }
 
-            // 4. Overhead Spotlight Beam (Overlay)
+            // 5. Overhead Spotlight Beam (Overlay)
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
-                light.anchor.set(0.5, 0.0);
-                light.position.set(640, -40);
-                light.scale.set(1.25);
+                light.anchor.set(0.5);
+                light.position.set(640, 360);
+                light.scale.set(stageScale);
                 light.blendMode = PIXI.BLEND_MODES.ADD;
-                light.alpha = 0.5;
+                light.alpha = 0.55;
                 this.stageFront.addChild(light);
+            }
+
+            // 6. Vignette Shadow Overlay
+            if (stageData.vignette) {
+                const vig = new PIXI.Sprite(stageData.vignette);
+                vig.anchor.set(0.5);
+                vig.position.set(640, 360);
+                vig.scale.set(stageScale);
+                this.stageFront.addChild(vig);
             }
         } else {
             const bg = new PIXI.Graphics();
@@ -644,9 +665,9 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        // 1. Centerpiece: Girlfriend on Speakers (Covers desk leg!)
+        // 1. Centerpiece: Girlfriend on Speakers (Sitting between desk and carpet!)
         if (this.gf) {
-            this.gf.container.position.set(620, 550);
+            this.gf.container.position.set(620, 560);
             this.worldContainer.addChild(this.gf.container);
         }
 
@@ -841,7 +862,7 @@ class PlayStateScene {
 
                 const anims = ['left', 'down', 'up', 'right'];
                 this.dad.playAnim(anims[n.dir], true);
-                this.camTargetX = 500; // Exact security.hxc camera
+                this.camTargetX = 500;
                 continue;
             }
 
@@ -899,7 +920,7 @@ class PlayStateScene {
         
         const anims = ['left', 'down', 'up', 'right'];
         this.bf.playAnim(anims[dir], true);
-        this.camTargetX = 850; // Exact security.hxc camera
+        this.camTargetX = 820;
 
         let closest = null;
         let minDiff = Infinity;
@@ -969,7 +990,7 @@ function onBeatHit(beat) {
     if (playState) {
         playState.camZoom = playState.baseZoom + 0.035;
 
-        // GF bobs left on beat 1, right on beat 2!
+        // Girlfriend dances left and right alternating beats!
         if (playState.gf) {
             playState.gfDanceLeft = !playState.gfDanceLeft;
             playState.gf.playAnim(playState.gfDanceLeft ? 'idleleft' : 'idleright', true);
@@ -1045,8 +1066,12 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
 
     if (animJsonEntry && spritemapJsonEntry && spritemapPngEntry) {
         try {
-            const animJson = JSON.parse(await animJsonEntry.async('string'));
-            const spritemapJson = JSON.parse(await spritemapJsonEntry.async('string'));
+            // FIXED: Strips UTF-8 BOM (\uFEFF) so JSON.parse never crashes!
+            const animText = (await animJsonEntry.async('string')).replace(/^\uFEFF/, '').trim();
+            const spritemapText = (await spritemapJsonEntry.async('string')).replace(/^\uFEFF/, '').trim();
+
+            const animJson = JSON.parse(animText);
+            const spritemapJson = JSON.parse(spritemapText);
             const pngBlob = await spritemapPngEntry.async('blob');
 
             const img = new Image();
@@ -1111,14 +1136,14 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load All 3 Characters: Dad, BF, and GF!
+        // 1. Load All 3 Characters: Noob49, BF, and GF!
         const dadChar = await loadCharacter(item.player2, false, false);
         const bfChar = await loadCharacter('bf', true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
-        // 2. Load the Security Office Stage with Correct Room Layout
+        // 2. Load Stage Pieces
         const stageData = {};
-        const stageAssets = ['wall', 'cabinets', 'table', 'light'];
+        const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette'];
 
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
             if (path.includes('bg/security/')) {
