@@ -296,7 +296,7 @@ const Conductor = {
 };
 
 // ========================================================
-// --- FLXANIMATE / ADOBE ANIMATE PARSER ---
+// --- TEXTURE ATLAS & SPARROW PARSER ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
@@ -336,7 +336,6 @@ function parseSparrowAtlas(baseTexture, xmlDoc) {
     return anims;
 }
 
-// 2. BULLETPROOF ADOBE ANIMATE TEXTURE ATLAS ENGINE
 function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
     const spritemap = {};
     for (const item of spritemapJson.ATLAS.SPRITES) {
@@ -355,7 +354,6 @@ function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
         const sym = symbols[symName];
         if (!sym || !sym.TL || !sym.TL.L) return;
 
-        // FIXED: Iterate backwards so Back Layers draw first and Front Layers draw on top!
         for (let l = sym.TL.L.length - 1; l >= 0; l--) {
             const layer = sym.TL.L[l];
             if (!layer.FR || layer.FR.length === 0) continue;
@@ -368,11 +366,7 @@ function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
                 }
             }
 
-            // Fallback to last frame if past duration
-            if (!activeFR) {
-                activeFR = layer.FR[layer.FR.length - 1];
-            }
-
+            if (!activeFR) activeFR = layer.FR[layer.FR.length - 1];
             if (!activeFR || !activeFR.E) continue;
 
             for (const el of activeFR.E) {
@@ -386,7 +380,6 @@ function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
                         container.addChild(spr);
                     }
                 } else if (el.SI) {
-                    // FIXED: If symbol is "SF" (Single Frame), freeze on First Frame (el.SI.FF) forever!
                     let subFrame = 0;
                     if (el.SI.LP === "SF") {
                         subFrame = el.SI.FF || 0;
@@ -404,43 +397,64 @@ function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
 
     const anims = {};
 
-    // Render symbols directly from Symbol Dictionary (SD.S)
-    const animSymbols = ['idle', 'left', 'down', 'up', 'right', 'hey', 'singleft', 'singdown', 'singup', 'singright'];
+    // Handles clean names AND prefixed BF names (e.g. "Misc/.../BF NOTE LEFT")
+    function registerAnimation(targetKey, symName) {
+        const sym = symbols[symName];
+        if (!sym) return;
 
-    for (const [name, sym] of Object.entries(symbols)) {
-        const lower = name.toLowerCase();
-        if (animSymbols.some(a => lower === a || lower.startsWith(a))) {
-            let maxFrames = 1;
-            for (const layer of sym.TL.L || []) {
-                for (const fr of layer.FR || []) {
-                    maxFrames = Math.max(maxFrames, fr.I + fr.DU);
-                }
+        let maxFrames = 1;
+        for (const layer of sym.TL.L || []) {
+            for (const fr of layer.FR || []) {
+                maxFrames = Math.max(maxFrames, fr.I + fr.DU);
             }
-
-            const frameTextures = [];
-            for (let f = 0; f < maxFrames; f++) {
-                const tempCont = new PIXI.Container();
-                // Origin centered to prevent clipping
-                renderSymbol(name, f, new PIXI.Matrix(), tempCont);
-
-                const renderTexture = PIXI.RenderTexture.create({ width: 900, height: 900 });
-                tempCont.position.set(450, 650); // Floor anchor
-                app.renderer.render(tempCont, { renderTexture });
-                frameTextures.push(renderTexture);
-                tempCont.destroy({ children: true });
-            }
-
-            anims[lower] = frameTextures;
         }
+
+        const frameTextures = [];
+        for (let f = 0; f < maxFrames; f++) {
+            const tempCont = new PIXI.Container();
+            renderSymbol(symName, f, new PIXI.Matrix(), tempCont);
+
+            const renderTexture = PIXI.RenderTexture.create({ width: 900, height: 900 });
+            tempCont.position.set(450, 780); // Exact foot anchor
+            app.renderer.render(tempCont, { renderTexture });
+            frameTextures.push(renderTexture);
+            tempCont.destroy({ children: true });
+        }
+
+        anims[targetKey] = frameTextures;
+    }
+
+    for (const symName of Object.keys(symbols)) {
+        const lower = symName.toLowerCase();
+        
+        if (lower.includes('idle')) registerAnimation('idle', symName);
+        else if (lower.includes('left') && !lower.includes('miss')) {
+            registerAnimation('left', symName);
+            registerAnimation('singleft', symName);
+        }
+        else if (lower.includes('down') && !lower.includes('miss')) {
+            registerAnimation('down', symName);
+            registerAnimation('singdown', symName);
+        }
+        else if (lower.includes('up') && !lower.includes('miss')) {
+            registerAnimation('up', symName);
+            registerAnimation('singup', symName);
+        }
+        else if (lower.includes('right') && !lower.includes('miss')) {
+            registerAnimation('right', symName);
+            registerAnimation('singright', symName);
+        }
+        else if (lower.includes('hey')) registerAnimation('hey', symName);
     }
 
     return anims;
 }
 
 class FunkinCharacter {
-    constructor(anims, isPlayer = false) {
+    constructor(anims, isPlayer = false, isTextureAtlas = false) {
         this.anims = anims;
         this.isPlayer = isPlayer;
+        this.isTextureAtlas = isTextureAtlas;
         this.container = new PIXI.Container();
 
         const idleKey = Object.keys(anims).find(k => k.toLowerCase().includes('idle')) || Object.keys(anims)[0];
@@ -454,8 +468,9 @@ class FunkinCharacter {
         this.currentAnim = 'idle';
         this.holdTimer = 0;
 
-        const scale = 0.85;
-        // FIXED: Opponent flipped to face right towards BF; BF stays facing left!
+        // Scale: 0.58 for Texture Atlas (4K), 0.85 for Sparrow (720p)
+        const scale = this.isTextureAtlas ? 0.58 : 0.85;
+        // Opponent faces right; BF faces left
         this.container.scale.set(this.isPlayer ? scale : -scale, scale);
     }
 
@@ -527,7 +542,7 @@ function createFallbackCharacter(colorHex, isPlayer) {
 let playState = null;
 
 class PlayStateScene {
-    constructor(songItem, dadChar, bfChar, stageSprites) {
+    constructor(songItem, dadChar, bfChar, stageData) {
         this.songItem = songItem;
         this.speed = songItem.speed || 2.5;
 
@@ -542,11 +557,13 @@ class PlayStateScene {
         this.score = 0;
         this.combo = 0;
 
-        this.camTargetX = 640;
+        // Camera from security.hxc!
+        this.camTargetX = 675;
+        this.camTargetY = 450;
         this.camZoom = 0.9;
         this.baseZoom = 0.9;
 
-        this.setupStage(stageSprites);
+        this.setupStage(stageData);
         this.setupCharacters();
         this.setupStrumlines();
         this.parseChartNotes(songItem.chartData);
@@ -556,14 +573,48 @@ class PlayStateScene {
         app.stage.addChild(this.hudContainer);
     }
 
-    setupStage(stageSprites) {
+    setupStage(stageData) {
         this.stageBack = new PIXI.Container();
+        this.stageFront = new PIXI.Container();
 
-        if (stageSprites && stageSprites.length > 0) {
-            stageSprites.forEach(spr => {
-                this.stageBack.addChild(spr);
-            });
+        if (stageData && stageData.wall) {
+            // 1. Room Background Wall & Floor
+            const wall = new PIXI.Sprite(stageData.wall);
+            wall.anchor.set(0.5);
+            wall.position.set(640, 360);
+            wall.scale.set(1.15);
+            this.stageBack.addChild(wall);
+
+            // 2. Security Cabinets with Traffic Cone
+            if (stageData.cabinets) {
+                const cabs = new PIXI.Sprite(stageData.cabinets);
+                cabs.anchor.set(0.5, 1.0);
+                cabs.position.set(1100, 680);
+                cabs.scale.set(1.0);
+                this.stageBack.addChild(cabs);
+            }
+
+            // 3. Security Desk / Table (Foreground)
+            if (stageData.table) {
+                const desk = new PIXI.Sprite(stageData.table);
+                desk.anchor.set(0.5, 1.0);
+                desk.position.set(640, 710);
+                desk.scale.set(1.05);
+                this.stageFront.addChild(desk);
+            }
+
+            // 4. Overhead Light Beam
+            if (stageData.light) {
+                const light = new PIXI.Sprite(stageData.light);
+                light.anchor.set(0.5, 0.0);
+                light.position.set(640, -50);
+                light.scale.set(1.2);
+                light.blendMode = PIXI.BLEND_MODES.ADD;
+                light.alpha = 0.55;
+                this.stageFront.addChild(light);
+            }
         } else {
+            // Space Starfield Default
             const bg = new PIXI.Graphics();
             bg.beginFill(0x0c0f18);
             bg.drawRect(-400, -200, 2080, 1120);
@@ -578,10 +629,6 @@ class PlayStateScene {
             bg.beginFill(0x191e2b);
             bg.drawRect(-400, 520, 2080, 600);
             bg.endFill();
-            bg.lineStyle(4, 0x00d2d3, 0.4);
-            bg.moveTo(-400, 520);
-            bg.lineTo(1680, 520);
-
             this.stageBack.addChild(bg);
         }
 
@@ -589,11 +636,15 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        this.dad.container.position.set(380, 590);
+        // Feet planted right on the floor!
+        this.dad.container.position.set(380, 540);
         this.worldContainer.addChild(this.dad.container);
 
-        this.bf.container.position.set(900, 590);
+        this.bf.container.position.set(900, 540);
         this.worldContainer.addChild(this.bf.container);
+
+        // Add foreground desk on top of feet
+        this.worldContainer.addChild(this.stageFront);
     }
 
     setupStrumlines() {
@@ -746,6 +797,7 @@ class PlayStateScene {
         this.dad.update(deltaSec);
         this.bf.update(deltaSec);
 
+        // Exact Camera Panning from security.hxc!
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -774,7 +826,7 @@ class PlayStateScene {
 
                 const anims = ['left', 'down', 'up', 'right'];
                 this.dad.playAnim(anims[n.dir], true);
-                this.camTargetX = 460;
+                this.camTargetX = 500; // Exact security.hxc camera
                 continue;
             }
 
@@ -827,7 +879,7 @@ class PlayStateScene {
         
         const anims = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
         this.bf.playAnim(anims[dir], true);
-        this.camTargetX = 820;
+        this.camTargetX = 850; // Exact security.hxc camera
 
         let closest = null;
         let minDiff = Infinity;
@@ -943,13 +995,17 @@ window.addEventListener('keydown', (e) => {
 async function loadCharacter(charName, isPlayer) {
     const clean = charName.toLowerCase().trim();
 
-    // 1. Texture Atlas Check
+    // 1. Texture Atlas Check (Noob49, Maroon, and Boyfriend!)
     let animJsonEntry = null;
     let spritemapJsonEntry = null;
     let spritemapPngEntry = null;
 
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        if (path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`)) {
+        const isMatch = isPlayer 
+            ? (path.includes('characters/cosmicube/bf') || path.includes('characters/bf') || path.includes('/bf/'))
+            : (path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`));
+
+        if (isMatch) {
             if (path.endsWith('animation.json')) animJsonEntry = entry;
             if (path.endsWith('spritemap1.json')) spritemapJsonEntry = entry;
             if (path.endsWith('spritemap1.png')) spritemapPngEntry = entry;
@@ -970,13 +1026,13 @@ async function loadCharacter(charName, isPlayer) {
             const anims = parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson);
 
             console.log(`%c[TEXTURE ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
-            return new FunkinCharacter(anims, isPlayer);
+            return new FunkinCharacter(anims, isPlayer, true);
         } catch(err) {
             console.warn(`Failed loading Texture Atlas for ${charName}:`, err);
         }
     }
 
-    // 2. Sparrow Sheet Check
+    // 2. Sparrow Sheet Check (Base Game)
     let pngEntry = null;
     let xmlEntry = null;
 
@@ -984,15 +1040,6 @@ async function loadCharacter(charName, isPlayer) {
         if (path.includes('/characters/') && !path.includes('/dialogue/') && !path.includes('/cutscene/')) {
             if (path.endsWith(`${clean}.png`)) pngEntry = entry;
             if (path.endsWith(`${clean}.xml`)) xmlEntry = entry;
-        }
-    }
-
-    if (isPlayer && (!pngEntry || !xmlEntry)) {
-        for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-            if (path.includes('/characters/') && !path.includes('/dialogue/')) {
-                if (path.endsWith('boyfriend.png') || path.endsWith('bf.png')) pngEntry = entry;
-                if (path.endsWith('boyfriend.xml') || path.endsWith('bf.xml')) xmlEntry = entry;
-            }
         }
     }
 
@@ -1012,7 +1059,7 @@ async function loadCharacter(charName, isPlayer) {
             const anims = parseSparrowAtlas(baseTexture, xmlDoc);
 
             console.log(`%c[SPARROW SHEET LOADED] ${charName.toUpperCase()}`, "color: #2ed573; font-weight: bold;");
-            return new FunkinCharacter(anims, isPlayer);
+            return new FunkinCharacter(anims, isPlayer, false);
         } catch(e) {
             console.warn(`Failed parsing Sparrow sheet for ${charName}:`, e);
         }
@@ -1067,31 +1114,29 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
+        // 1. Load Both Characters!
         const dadChar = await loadCharacter(item.player2, false);
-        const bfChar = await loadCharacter(item.player1, true);
+        const bfChar = await loadCharacter('bf', true);
 
-        const stageSprites = [];
-        const stageClean = (item.stage || 'security').toLowerCase().replace(/[^a-z0-9]/g, '');
+        // 2. Load the Complete Security Office Stage
+        const stageData = {};
+        const stageAssets = ['wall', 'cabinets', 'table', 'light', 'vignette'];
 
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-            const cleanPath = path.replace(/[^a-z0-9\/\.]/g, '');
-            if ((cleanPath.includes(`stages/${stageClean}`) || cleanPath.includes(`images/${stageClean}`)) && !cleanPath.includes('character')) {
-                if (cleanPath.endsWith('.png') || cleanPath.endsWith('.jpg')) {
-                    const blob = await entry.async('blob');
-                    const img = new Image();
-                    img.src = URL.createObjectURL(blob);
-                    await new Promise(res => img.onload = res);
-                    
-                    const spr = PIXI.Sprite.from(img);
-                    spr.anchor.set(0.5);
-                    spr.position.set(640, 360);
-                    spr.scale.set(1.0);
-                    stageSprites.push(spr);
+            if (path.includes('bg/security/')) {
+                for (const key of stageAssets) {
+                    if (path.endsWith(`${key}.png`)) {
+                        const blob = await entry.async('blob');
+                        const img = new Image();
+                        img.src = URL.createObjectURL(blob);
+                        await new Promise(res => img.onload = res);
+                        stageData[key] = PIXI.Texture.from(img);
+                    }
                 }
             }
         }
 
-        playState = new PlayStateScene(item, dadChar, bfChar, stageSprites);
+        playState = new PlayStateScene(item, dadChar, bfChar, stageData);
 
         const playTime = audioCtx.currentTime + 0.1;
         Conductor.activeSources.forEach(s => s.start(playTime));
