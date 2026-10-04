@@ -296,7 +296,7 @@ const Conductor = {
 };
 
 // ========================================================
-// --- DYNAMIC TEXTURE ATLAS CHARACTER (0 EXTRA VRAM) ---
+// --- DYNAMIC TEXTURE ATLAS CHARACTER ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
@@ -322,15 +322,42 @@ class DynamicAtlasCharacter {
             }
         }
 
+        // INTELLIGENT ANIMATION REGISTRATION
+        // Strictly prevents 'copy', 'alt', or 'shift' from overriding normal poses!
         this.animMap = {};
+        
         for (const symName of Object.keys(this.symbols)) {
             const lower = symName.toLowerCase();
-            if (lower.includes('idle')) this.animMap['idle'] = symName;
-            else if (lower.includes('left') && !lower.includes('miss')) this.animMap['left'] = symName;
-            else if (lower.includes('down') && !lower.includes('miss')) this.animMap['down'] = symName;
-            else if (lower.includes('up') && !lower.includes('miss')) this.animMap['up'] = symName;
-            else if (lower.includes('right') && !lower.includes('miss')) this.animMap['right'] = symName;
-            else if (lower.includes('hey')) this.animMap['hey'] = symName;
+            const isCopyOrAlt = lower.includes('copy') || lower.includes('alt') || lower.includes('shift') || lower.includes('dark');
+
+            // 1. Primary Normal Animations (White shirt / normal BF)
+            if (lower.includes('idle') && !isCopyOrAlt && !this.animMap['idle']) {
+                this.animMap['idle'] = symName;
+            }
+            else if (lower.includes('left') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['left']) {
+                this.animMap['left'] = symName;
+                this.animMap['singleft'] = symName;
+            }
+            else if (lower.includes('down') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['down']) {
+                this.animMap['down'] = symName;
+                this.animMap['singdown'] = symName;
+            }
+            else if (lower.includes('up') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['up']) {
+                this.animMap['up'] = symName;
+                this.animMap['singup'] = symName;
+            }
+            else if (lower.includes('right') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['right']) {
+                this.animMap['right'] = symName;
+                this.animMap['singright'] = symName;
+            }
+
+            // 2. Dedicated Miss Animations (Purple / bruised BF!)
+            if (lower.includes('miss')) {
+                if (lower.includes('left')) this.animMap['singleftmiss'] = symName;
+                if (lower.includes('down')) this.animMap['singdownmiss'] = symName;
+                if (lower.includes('up')) this.animMap['singupmiss'] = symName;
+                if (lower.includes('right')) this.animMap['singrightmiss'] = symName;
+            }
         }
 
         this.currentAnim = 'idle';
@@ -339,7 +366,6 @@ class DynamicAtlasCharacter {
         this.holdTimer = 0;
         this.fps = 24;
 
-        // Perfect scale: Noob49 is 0.65; BF is 0.65
         const scale = 0.65;
         this.container.scale.set(this.isPlayer ? scale : -scale, scale);
 
@@ -504,7 +530,6 @@ class PlayStateScene {
         this.score = 0;
         this.combo = 0;
 
-        // Cinematic close-up zoom matching official game!
         this.camTargetX = 640;
         this.camZoom = 1.05;
         this.baseZoom = 1.05;
@@ -524,14 +549,12 @@ class PlayStateScene {
         this.stageFront = new PIXI.Container();
 
         if (stageData && stageData.wall) {
-            // 1. Background Wall & Floor Tiles
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(640, 360);
             wall.scale.set(1.2);
             this.stageBack.addChild(wall);
 
-            // 2. Cabinets placed on the FAR RIGHT background!
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
                 cabs.anchor.set(0.5, 1.0);
@@ -540,16 +563,14 @@ class PlayStateScene {
                 this.stageBack.addChild(cabs);
             }
 
-            // 3. Security Desk / Table placed in the BACKGROUND on the left!
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5, 1.0);
-                desk.position.set(400, 560); // Sits behind Noob49!
+                desk.position.set(400, 560);
                 desk.scale.set(0.92);
                 this.stageBack.addChild(desk);
             }
 
-            // 4. Overhead Spotlight Beam (Overlay)
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
@@ -581,11 +602,9 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        // Noob49 stands in the FOREGROUND on the left floor!
         this.dad.container.position.set(280, 640);
         this.worldContainer.addChild(this.dad.container);
 
-        // Boyfriend stands on the carpet on the right floor!
         this.bf.container.position.set(950, 640);
         this.worldContainer.addChild(this.bf.container);
 
@@ -775,7 +794,7 @@ class PlayStateScene {
                 continue;
             }
 
-            // Player Miss
+            // Player Miss -> Triggers Purple Miss Animation!
             if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
@@ -784,6 +803,10 @@ class PlayStateScene {
                 this.score = Math.max(0, this.score - 100);
                 this.showRating("MISS", 0xff334b);
                 this.updateScore();
+
+                // PLAY PURPLE MISS ANIMATION!
+                const missAnims = ['singleftmiss', 'singdownmiss', 'singupmiss', 'singrightmiss'];
+                this.bf.playAnim(missAnims[n.dir] || 'singleftmiss', true);
                 continue;
             }
 
@@ -824,6 +847,7 @@ class PlayStateScene {
         const songPos = Conductor.songPosition;
         this.hitReceptor(dir, true);
         
+        // NORMAL COLORFUL SINGING (No longer purple!)
         const anims = ['left', 'down', 'up', 'right'];
         this.bf.playAnim(anims[dir], true);
         this.camTargetX = 820;
@@ -938,7 +962,7 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// --- ADVANCED ULTRA-LEAN CHARACTER LOADER ---
+// --- ADVANCED CHARACTER LOADER ---
 async function loadCharacter(charName, isPlayer) {
     const clean = charName.toLowerCase().trim();
 
@@ -1026,11 +1050,9 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load Both Characters
         const dadChar = await loadCharacter(item.player2, false);
         const bfChar = await loadCharacter('bf', true);
 
-        // 2. Load the Security Office Stage with Correct Room Layout
         const stageData = {};
         const stageAssets = ['wall', 'cabinets', 'table', 'light'];
 
