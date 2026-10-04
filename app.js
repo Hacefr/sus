@@ -311,6 +311,40 @@ function extractMatrix(el) {
     return new PIXI.Matrix();
 }
 
+function parseSparrowAtlas(baseTexture, xmlDoc) {
+    const subTextures = xmlDoc.getElementsByTagName("SubTexture");
+    const anims = {};
+
+    for (let i = 0; i < subTextures.length; i++) {
+        const sub = subTextures[i];
+        const rawName = sub.getAttribute("name");
+        if (!rawName) continue;
+
+        const match = rawName.match(/^(.*?)([0-9]{4})$/);
+        const animName = match ? match[1] : rawName;
+
+        const x = parseInt(sub.getAttribute("x") || 0);
+        const y = parseInt(sub.getAttribute("y") || 0);
+        const width = parseInt(sub.getAttribute("width") || 0);
+        const height = parseInt(sub.getAttribute("height") || 0);
+
+        const frameX = parseInt(sub.getAttribute("frameX") || 0);
+        const frameY = parseInt(sub.getAttribute("frameY") || 0);
+        const frameWidth = parseInt(sub.getAttribute("frameWidth") || width);
+        const frameHeight = parseInt(sub.getAttribute("frameHeight") || height);
+
+        const rect = new PIXI.Rectangle(x, y, width, height);
+        const orig = new PIXI.Rectangle(0, 0, frameWidth, frameHeight);
+        const trim = new PIXI.Rectangle(-frameX, -frameY, width, height);
+
+        const texture = new PIXI.Texture(baseTexture, rect, orig, trim);
+
+        if (!anims[animName]) anims[animName] = [];
+        anims[animName].push(texture);
+    }
+    return anims;
+}
+
 class DynamicAtlasCharacter {
     constructor(baseTexture, animJson, spritemapJson, isPlayer = false, isGF = false) {
         this.isPlayer = isPlayer;
@@ -550,7 +584,7 @@ function createFallbackCharacter(colorHex, isPlayer) {
 let playState = null;
 
 class PlayStateScene {
-    constructor(songItem, dadChar, bfChar, gfChar, stageData) {
+    constructor(songItem, dadChar, bfChar, gfChar, stageData, stageProps) {
         this.songItem = songItem;
         this.speed = songItem.speed || 2.5;
 
@@ -568,15 +602,20 @@ class PlayStateScene {
         this.misses = 0;
         this.totalNotesHit = 0;
         this.totalNotesPossible = 0;
-        this.health = 1.0; // Health ranges from 0.0 to 2.0 (1.0 = 50%)
+        this.health = 1.0;
 
         this.gfDanceLeft = false;
+
+        // Background Animated Crewmates
+        this.tawnySprite = null;
+        this.minigreySprite = null;
+        this.shitSprite = null;
 
         this.camTargetX = 640;
         this.camZoom = 1.05;
         this.baseZoom = 1.05;
 
-        this.setupStage(stageData);
+        this.setupStage(stageData, stageProps);
         this.setupCharacters();
         this.setupStrumlines();
         this.parseChartNotes(songItem.chartData);
@@ -586,7 +625,7 @@ class PlayStateScene {
         app.stage.addChild(this.hudContainer);
     }
 
-    setupStage(stageData) {
+    setupStage(stageData, stageProps) {
         this.stageBack = new PIXI.Container();
         this.stageFront = new PIXI.Container();
 
@@ -594,7 +633,7 @@ class PlayStateScene {
             const rawWidth = stageData.wall.width || 1920;
             const stageScale = 1280 / rawWidth;
 
-            // 1. Room Background Wall & Floor
+            // 1. Room Background Wall & Floor Tiles
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(640, 360);
@@ -619,7 +658,18 @@ class PlayStateScene {
                 this.stageBack.addChild(cabs);
             }
 
-            // 4. Security Desk with Laptop & Flower Pot (Behind Noob49 & GF)
+            // 4. Tawny (Brown Crewmate typing on the laptop behind the desk!)
+            if (stageProps && stageProps.tawny) {
+                const anim = stageProps.tawny.bop || Object.values(stageProps.tawny)[0];
+                this.tawnySprite = new PIXI.AnimatedSprite(anim);
+                this.tawnySprite.anchor.set(0.5, 1.0);
+                this.tawnySprite.position.set(260, 480);
+                this.tawnySprite.scale.set(0.65);
+                this.tawnySprite.loop = false;
+                this.stageBack.addChild(this.tawnySprite);
+            }
+
+            // 5. Security Desk with Laptop & Flower Pot
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5);
@@ -628,18 +678,29 @@ class PlayStateScene {
                 this.stageBack.addChild(desk);
             }
 
-            // 5. Overhead Spotlight Beam (Overlay)
+            // 6. Shit / Poopet (Bops on desk every 2 beats!)
+            if (stageProps && stageProps.shit) {
+                const anim = stageProps.shit.bop1 || Object.values(stageProps.shit)[0];
+                this.shitSprite = new PIXI.AnimatedSprite(anim);
+                this.shitSprite.anchor.set(0.5, 1.0);
+                this.shitSprite.position.set(470, 420);
+                this.shitSprite.scale.set(0.65);
+                this.shitSprite.loop = false;
+                this.stageBack.addChild(this.shitSprite);
+            }
+
+            // 7. Overhead Spotlight Beam (Overlay)
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
-                light.anchor.set(0.5);
-                light.position.set(640, 360);
+                light.anchor.set(0.5, 0.0);
+                light.position.set(640, -40);
                 light.scale.set(stageScale);
                 light.blendMode = PIXI.BLEND_MODES.ADD;
                 light.alpha = 0.55;
                 this.stageFront.addChild(light);
             }
 
-            // 6. Vignette Shadow Overlay
+            // 8. Vignette Shadow Overlay
             if (stageData.vignette) {
                 const vig = new PIXI.Sprite(stageData.vignette);
                 vig.anchor.set(0.5);
@@ -652,16 +713,6 @@ class PlayStateScene {
             bg.beginFill(0x0c0f18);
             bg.drawRect(-400, -200, 2080, 1120);
             bg.endFill();
-
-            for (let i = 0; i < 70; i++) {
-                bg.beginFill(0xffffff, Math.random() * 0.8 + 0.2);
-                bg.drawCircle(Math.random() * 1920 - 320, Math.random() * 1080 - 180, Math.random() * 2.5 + 1);
-                bg.endFill();
-            }
-
-            bg.beginFill(0x191e2b);
-            bg.drawRect(-400, 520, 2080, 600);
-            bg.endFill();
             this.stageBack.addChild(bg);
         }
 
@@ -669,9 +720,9 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        // 1. Centerpiece: Girlfriend on Speakers (Dead center between desk and carpet!)
+        // 1. Centerpiece: Girlfriend on Speakers (Sitting squarely in the middle!)
         if (this.gf) {
-            this.gf.container.position.set(670, 610); // Perfectly centered on carpet line!
+            this.gf.container.position.set(640, 600);
             this.worldContainer.addChild(this.gf.container);
         }
 
@@ -679,8 +730,19 @@ class PlayStateScene {
         this.dad.container.position.set(230, 640);
         this.worldContainer.addChild(this.dad.container);
 
-        // 3. Boyfriend on the Front Right Carpet!
-        this.bf.container.position.set(990, 640);
+        // 3. Minigrey (Little grey imp standing by Noob49's boots!)
+        if (this.stageProps && this.stageProps.minigrey) {
+            const anim = this.stageProps.minigrey.idle || Object.values(this.stageProps.minigrey)[0];
+            this.minigreySprite = new PIXI.AnimatedSprite(anim);
+            this.minigreySprite.anchor.set(0.5, 1.0);
+            this.minigreySprite.position.set(90, 680);
+            this.minigreySprite.scale.set(0.65);
+            this.minigreySprite.loop = false;
+            this.worldContainer.addChild(this.minigreySprite);
+        }
+
+        // 4. Boyfriend sitting squarely on the dark green rug!
+        this.bf.container.position.set(870, 630);
         this.worldContainer.addChild(this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
@@ -805,39 +867,32 @@ class PlayStateScene {
         });
     }
 
-    // --- HEALTH BAR & ICON CREATOR ---
     setupHUD() {
-        // 1. Health Bar Container (Bottom Center)
         this.healthBarCont = new PIXI.Container();
         this.healthBarCont.position.set(640, 645);
 
         const barWidth = 600;
         const barHeight = 16;
-
         this.barWidth = barWidth;
         this.barHeight = barHeight;
 
-        // Black Border Frame
         this.barBorder = new PIXI.Graphics();
         this.barBorder.beginFill(0x000000);
         this.barBorder.drawRect(-barWidth / 2 - 4, -barHeight / 2 - 4, barWidth + 8, barHeight + 8);
         this.barBorder.endFill();
         this.healthBarCont.addChild(this.barBorder);
 
-        // Dynamic Health Fill Graphic
         this.barFill = new PIXI.Graphics();
         this.healthBarCont.addChild(this.barFill);
 
-        // 2. Character Icons (Noob49 on Left, BF on Right)
-        this.dadIcon = this.createCharacterIcon(0x50586e, false); // Grey Impostor
-        this.bfIcon = this.createCharacterIcon(0x31b0d5, true);   // Boyfriend Cyan
+        this.dadIcon = this.createCharacterIcon(0x50586e, false);
+        this.bfIcon = this.createCharacterIcon(0x31b0d5, true);
 
         this.healthBarCont.addChild(this.dadIcon);
         this.healthBarCont.addChild(this.bfIcon);
 
         this.hudContainer.addChild(this.healthBarCont);
 
-        // 3. Score & Accuracy Text
         this.scoreText = new PIXI.Text('Score: 0 | Misses: 0 | Accuracy: ?', {
             fontFamily: 'Segoe UI, sans-serif',
             fontSize: 16,
@@ -849,7 +904,6 @@ class PlayStateScene {
         this.scoreText.position.set(640, 678);
         this.hudContainer.addChild(this.scoreText);
 
-        // 4. Hit Rating Text
         this.ratingText = new PIXI.Text('READY!', {
             fontFamily: 'Segoe UI, sans-serif',
             fontSize: 48,
@@ -869,29 +923,27 @@ class PlayStateScene {
         const g = new PIXI.Graphics();
 
         if (isBF) {
-            // Boyfriend Iconic Head (Blue Hair, Red Cap, Skin)
-            g.beginFill(0x31b0d5); // Blue Hair
+            g.beginFill(0x31b0d5);
             g.drawCircle(0, 0, 26);
             g.endFill();
 
-            g.beginFill(0xe55039); // Red Cap
+            g.beginFill(0xe55039);
             g.drawRoundedRect(-14, -26, 38, 24, 8);
             g.endFill();
 
-            g.beginFill(0xf6b93b); // Face Skin
+            g.beginFill(0xf6b93b);
             g.drawRoundedRect(-12, -4, 28, 22, 6);
             g.endFill();
         } else {
-            // Noob49 Iconic Head (Grey bean with Antenna Bomb!)
             g.beginFill(colorHex);
             g.drawRoundedRect(-22, -22, 44, 44, 16);
             g.endFill();
 
-            g.beginFill(0x80dfff); // Visor
+            g.beginFill(0x80dfff);
             g.drawRoundedRect(-6, -14, 28, 18, 8);
             g.endFill();
 
-            g.beginFill(0x2f3542); // Bomb Antenna
+            g.beginFill(0x2f3542);
             g.drawRect(-4, -34, 8, 12);
             g.drawCircle(0, -38, 6);
             g.endFill();
@@ -909,18 +961,15 @@ class PlayStateScene {
 
         this.barFill.clear();
 
-        // Left Fill (Opponent Grey)
         this.barFill.beginFill(0x50586e);
         this.barFill.drawRect(-bw / 2, -bh / 2, bw, bh);
         this.barFill.endFill();
 
-        // Right Fill (Boyfriend Cyan)
         const bfWidth = bw * pct;
         this.barFill.beginFill(0x31b0d5);
         this.barFill.drawRect(bw / 2 - bfWidth, -bh / 2, bfWidth, bh);
         this.barFill.endFill();
 
-        // Place Icons at the exact health divider point
         const splitX = (bw / 2 - bfWidth);
         this.dadIcon.position.set(splitX - 35, 0);
         this.bfIcon.position.set(splitX + 35, 0);
@@ -935,13 +984,11 @@ class PlayStateScene {
         this.bf.update(deltaSec);
         if (this.gf) this.gf.update(deltaSec);
 
-        // Smooth Icon beat shrinking
         this.dadIcon.scale.x += (1.0 - this.dadIcon.scale.x) * 0.15;
         this.dadIcon.scale.y += (1.0 - this.dadIcon.scale.y) * 0.15;
         this.bfIcon.scale.x += (1.0 - this.bfIcon.scale.x) * 0.15;
         this.bfIcon.scale.y += (1.0 - this.bfIcon.scale.y) * 0.15;
 
-        // Camera Smooth Panning
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -982,7 +1029,7 @@ class PlayStateScene {
                 if (n.tailSprite) n.tailSprite.visible = false;
                 this.combo = 0;
                 this.misses++;
-                this.health = Math.max(0.0, this.health - 0.09); // Drain Health
+                this.health = Math.max(0.0, this.health - 0.09);
                 this.score = Math.max(0, this.score - 100);
 
                 this.showRating("MISS", 0xff334b);
@@ -1056,7 +1103,7 @@ class PlayStateScene {
             this.combo++;
             this.totalNotesHit++;
             this.totalNotesPossible++;
-            this.health = Math.min(2.0, this.health + 0.045); // Gain Health!
+            this.health = Math.min(2.0, this.health + 0.045);
 
             if (minDiff <= 45) {
                 this.score += 350;
@@ -1108,15 +1155,19 @@ function onBeatHit(beat) {
     if (playState) {
         playState.camZoom = playState.baseZoom + 0.035;
 
-        // Bouncing Character Icons on the Health Bar!
         if (playState.dadIcon) playState.dadIcon.scale.set(1.25);
         if (playState.bfIcon) playState.bfIcon.scale.set(1.25);
 
-        // Girlfriend dances left and right alternating beats!
+        // Bop Girlfriend
         if (playState.gf) {
             playState.gfDanceLeft = !playState.gfDanceLeft;
             playState.gf.playAnim(playState.gfDanceLeft ? 'idleleft' : 'idleright', true);
         }
+
+        // Bop Background Crewmates (from security.hxc!)
+        if (playState.tawnySprite && beat % 1 === 0) playState.tawnySprite.gotoAndPlay(0);
+        if (playState.minigreySprite && beat % 1 === 0) playState.minigreySprite.gotoAndPlay(0);
+        if (playState.shitSprite && beat % 2 === 0) playState.shitSprite.gotoAndPlay(0);
 
         if (playState.dad.holdTimer <= 0) playState.dad.playAnim('idle');
         if (playState.bf.holdTimer <= 0) playState.bf.playAnim('idle');
@@ -1211,6 +1262,35 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
     return createFallbackCharacter(isPlayer ? 0x00d2d3 : (isGF ? 0xa55eea : 0xff334b), isPlayer);
 }
 
+// Helper to load animated Sparrow props (Tawny, Minigrey, Shit)
+async function loadAnimatedProp(propName) {
+    let pngEntry = null;
+    let xmlEntry = null;
+
+    for (const [path, entry] of Object.entries(VirtualFS.assets)) {
+        if (path.includes('bg/security/')) {
+            if (path.endsWith(`${propName}.png`)) pngEntry = entry;
+            if (path.endsWith(`${propName}.xml`)) xmlEntry = entry;
+        }
+    }
+
+    if (pngEntry && xmlEntry) {
+        try {
+            const pngBlob = await pngEntry.async('blob');
+            const xmlText = (await xmlEntry.async('string')).replace(/^\uFEFF/, '').trim();
+
+            const img = new Image();
+            img.src = URL.createObjectURL(pngBlob);
+            await new Promise(res => img.onload = res);
+
+            const baseTexture = new PIXI.BaseTexture(img);
+            const xmlDoc = new DOMParser().parseFromString(xmlText, 'text/xml');
+            return parseSparrowAtlas(baseTexture, xmlDoc);
+        } catch(e) {}
+    }
+    return null;
+}
+
 // --- LAUNCH SONG ---
 async function launchSong(item) {
     if (audioCtx.state === 'suspended') {
@@ -1257,12 +1337,12 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load All 3 Characters: Noob49, BF, and GF!
+        // 1. Load All 3 Main Characters
         const dadChar = await loadCharacter(item.player2, false, false);
         const bfChar = await loadCharacter('bf', true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
-        // 2. Load Stage Pieces
+        // 2. Load Stage Background Images
         const stageData = {};
         const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette'];
 
@@ -1280,7 +1360,14 @@ async function launchSong(item) {
             }
         }
 
-        playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData);
+        // 3. Load Animated Background Crewmates (Tawny, Minigrey, Shit)
+        const stageProps = {
+            tawny: await loadAnimatedProp('tawny'),
+            minigrey: await loadAnimatedProp('minigrey'),
+            shit: await loadAnimatedProp('shit')
+        };
+
+        playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData, stageProps);
 
         setTimeout(() => {
             if (playState) {
