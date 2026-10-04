@@ -17,11 +17,6 @@ const VirtualFS = {
     shaders: {}      
 };
 
-// Permanent Stage Registry (for porting all songs!)
-const STAGE_PRESETS = {
-    security: null // Gets filled by our Visual Editor export!
-};
-
 const dropOverlay = document.getElementById('drop-overlay');
 const stagedList = document.getElementById('staged-files-list');
 const startBtn = document.getElementById('start-engine-btn');
@@ -301,7 +296,7 @@ const Conductor = {
 };
 
 // ========================================================
-// --- DYNAMIC TEXTURE ATLAS CHARACTER (MX + M3D SUPPORT) ---
+// --- DYNAMIC TEXTURE ATLAS CHARACTER (MX + M3D) ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
@@ -583,7 +578,7 @@ function createFallbackCharacter(colorHex, isPlayer) {
 }
 
 // ========================================================
-// --- STAGE & VISUAL IN-ENGINE STAGE INSPECTOR ---
+// --- STAGE & VISUAL SCENE TREE INSPECTOR ---
 // ========================================================
 
 let playState = null;
@@ -615,7 +610,7 @@ class PlayStateScene {
         this.minigreySprite = null;
         this.shitSprite = null;
 
-        // Stage Inspector Registry
+        // Inspector Registry
         this.inspectableProps = {};
         this.selectedProp = null;
         this.selectionBox = new PIXI.Graphics();
@@ -630,22 +625,24 @@ class PlayStateScene {
         this.setupStrumlines();
         this.parseChartNotes(songItem.chartData);
         this.setupHUD();
-        this.initStageInspector();
+        this.initSceneTreePanel();
 
         app.stage.addChild(this.worldContainer);
         app.stage.addChild(this.hudContainer);
     }
 
-    makeInspectable(name, displayObj) {
+    makeInspectable(name, displayObj, allowDirectClick = true) {
         displayObj.propName = name;
-        displayObj.eventMode = 'static';
-        displayObj.cursor = 'pointer';
-        
-        displayObj.on('pointerdown', (e) => {
-            e.stopPropagation();
-            this.selectInspectableProp(displayObj);
-        });
-
+        if (allowDirectClick) {
+            displayObj.eventMode = 'static';
+            displayObj.cursor = 'pointer';
+            displayObj.on('pointerdown', (e) => {
+                e.stopPropagation();
+                this.selectInspectableProp(displayObj);
+            });
+        } else {
+            displayObj.eventMode = 'none'; // Overlays like vignette will NEVER block clicks!
+        }
         this.inspectableProps[name] = displayObj;
     }
 
@@ -663,9 +660,9 @@ class PlayStateScene {
             wall.position.set(640, 360);
             wall.scale.set(stageScale);
             this.stageBack.addChild(wall);
-            this.makeInspectable('wall', wall);
+            this.makeInspectable('wall', wall, false);
 
-            // 2. Wall Shelf with Party Hat (props.png)
+            // 2. Wall Shelf with Party Hat & Frame (props.png)
             if (stageData.props) {
                 const wallProps = new PIXI.Sprite(stageData.props);
                 wallProps.anchor.set(0.5);
@@ -697,7 +694,7 @@ class PlayStateScene {
                 this.makeInspectable('tawny', this.tawnySprite);
             }
 
-            // 5. Security Desk with Laptop
+            // 5. Security Desk with Laptop & Flower Pot
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5);
@@ -719,7 +716,7 @@ class PlayStateScene {
                 this.makeInspectable('shit', this.shitSprite);
             }
 
-            // 7. Light Spotlight Beam
+            // 7. Light Spotlight Beam (Overhead - No click intercept!)
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
@@ -728,18 +725,24 @@ class PlayStateScene {
                 light.blendMode = PIXI.BLEND_MODES.ADD;
                 light.alpha = 0.55;
                 this.stageFront.addChild(light);
-                this.makeInspectable('light', light);
+                this.makeInspectable('light', light, false);
             }
 
-            // 8. Vignette
+            // 8. Vignette (Dark borders - No click intercept!)
             if (stageData.vignette) {
                 const vig = new PIXI.Sprite(stageData.vignette);
                 vig.anchor.set(0.5);
                 vig.position.set(640, 360);
                 vig.scale.set(stageScale);
                 this.stageFront.addChild(vig);
-                this.makeInspectable('vignette', vig);
+                this.makeInspectable('vignette', vig, false);
             }
+        } else {
+            const bg = new PIXI.Graphics();
+            bg.beginFill(0x0c0f18);
+            bg.drawRect(-400, -200, 2080, 1120);
+            bg.endFill();
+            this.stageBack.addChild(bg);
         }
 
         this.worldContainer.addChild(this.stageBack);
@@ -748,7 +751,7 @@ class PlayStateScene {
     setupCharacters(stageProps) {
         // GF
         if (this.gf) {
-            this.gf.container.position.set(640, 600);
+            this.gf.container.position.set(670, 610);
             this.worldContainer.addChild(this.gf.container);
             this.makeInspectable('gf', this.gf.container);
         }
@@ -778,8 +781,24 @@ class PlayStateScene {
         this.worldContainer.addChild(this.stageFront);
     }
 
-    // --- VISUAL STAGE INSPECTOR CONTROLS ---
-    initStageInspector() {
+    // --- SCENE HIERARCHY TREE PANEL (TOGGLED BY 'H') ---
+    initSceneTreePanel() {
+        let treeDom = document.getElementById('scene-tree-panel');
+        if (!treeDom) {
+            treeDom = document.createElement('div');
+            treeDom.id = 'scene-tree-panel';
+            treeDom.style.cssText = `
+                position: absolute; right: 15px; top: 15px; width: 220px; max-height: 480px;
+                background: rgba(15, 18, 26, 0.92); border: 1px solid #00d2d3; border-radius: 8px;
+                padding: 10px; color: #fff; font-family: monospace; font-size: 13px;
+                overflow-y: auto; z-index: 1000; box-shadow: 0 0 15px rgba(0,210,211,0.25);
+            `;
+            gameContainer.appendChild(treeDom);
+        }
+
+        this.renderSceneTreeUI(treeDom);
+
+        // Dragging & Nudge Events
         let isDragging = false;
         let dragOffset = { x: 0, y: 0 };
 
@@ -822,8 +841,16 @@ class PlayStateScene {
             }
         }, { passive: false });
 
-        // Keyboard Controls: Nudge, Layers, and Export
+        // Hotkeys: H, Nudge, Layers, Save
         window.addEventListener('keydown', (e) => {
+            // Press H -> Toggle Tree Panel Visibility!
+            if (e.key === 'h' || e.key === 'H') {
+                const panel = document.getElementById('scene-tree-panel');
+                if (panel) {
+                    panel.style.display = (panel.style.display === 'none') ? 'block' : 'none';
+                }
+            }
+
             if (!this.selectedProp) return;
 
             const step = e.shiftKey ? 10 : 1;
@@ -832,7 +859,6 @@ class PlayStateScene {
             if (e.key === 'ArrowUp') { this.selectedProp.y -= step; this.updateInspectorHUD(); }
             if (e.key === 'ArrowDown') { this.selectedProp.y += step; this.updateInspectorHUD(); }
 
-            // Layer Reordering: [ sends back, ] brings forward
             if (e.key === '[') {
                 const p = this.selectedProp.parent;
                 const idx = p.getChildIndex(this.selectedProp);
@@ -846,16 +872,67 @@ class PlayStateScene {
                 this.updateInspectorHUD();
             }
 
-            // 'S' key -> EXPORT CURRENT STAGE TO CODE!
             if (e.key === 's' || e.key === 'S') {
                 this.exportStageLayout();
             }
         });
     }
 
+    renderSceneTreeUI(panel) {
+        panel.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #2f3542; padding-bottom:6px; margin-bottom:8px;">
+                <strong style="color:#00d2d3">SCENE TREE (H)</strong>
+                <button id="save-tree-btn" style="background:#ff4757; color:#fff; border:none; border-radius:4px; padding:2px 8px; cursor:pointer; font-weight:bold;">SAVE</button>
+            </div>
+            <div id="tree-items-list"></div>
+        `;
+
+        document.getElementById('save-tree-btn').onclick = () => this.exportStageLayout();
+
+        const listCont = document.getElementById('tree-items-list');
+
+        for (const [name, propObj] of Object.entries(this.inspectableProps)) {
+            const row = document.createElement('div');
+            row.style.cssText = `
+                display: flex; align-items: center; justify-content: space-between;
+                padding: 4px 6px; margin-bottom: 4px; border-radius: 4px; background: #191e2b;
+            `;
+
+            // Hide / Unhide Eye Button
+            const eyeBtn = document.createElement('button');
+            eyeBtn.innerText = propObj.visible ? '👁' : '🚫';
+            eyeBtn.style.cssText = `background:none; border:none; color:#a4b0be; cursor:pointer; font-size:14px; margin-right:6px;`;
+            eyeBtn.onclick = (e) => {
+                e.stopPropagation();
+                propObj.visible = !propObj.visible;
+                eyeBtn.innerText = propObj.visible ? '👁' : '🚫';
+                eyeBtn.style.color = propObj.visible ? '#a4b0be' : '#ff4757';
+            };
+
+            // Select Object Button
+            const selectBtn = document.createElement('button');
+            selectBtn.innerText = name.toUpperCase();
+            selectBtn.style.cssText = `
+                background: none; border: none; color: #fff; text-align: left;
+                flex: 1; cursor: pointer; font-family: monospace; font-weight: bold;
+            `;
+            selectBtn.onclick = () => this.selectInspectableProp(propObj);
+
+            row.appendChild(eyeBtn);
+            row.appendChild(selectBtn);
+            row.id = `tree-row-${name}`;
+            listCont.appendChild(row);
+        }
+    }
+
     selectInspectableProp(prop) {
         this.selectedProp = prop;
         this.updateInspectorHUD();
+
+        // Highlight selected row in tree
+        document.querySelectorAll('#tree-items-list div').forEach(r => r.style.background = '#191e2b');
+        const activeRow = document.getElementById(`tree-row-${prop.propName}`);
+        if (activeRow) activeRow.style.background = '#2ed57333';
     }
 
     updateInspectorHUD() {
@@ -867,9 +944,9 @@ class PlayStateScene {
         this.selectionBox.drawRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
         const sx = Math.abs(this.selectedProp.scale.x).toFixed(2);
-        const parentIdx = this.selectedProp.parent.getChildIndex(this.selectedProp);
+        const parentIdx = this.selectedProp.parent ? this.selectedProp.parent.getChildIndex(this.selectedProp) : 0;
 
-        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()}\nPosition: (${this.selectedProp.x}, ${this.selectedProp.y})\nScale: ${sx}  |  Layer: ${parentIdx}\n[Click & Drag] to move | [Scroll] to scale | '[' / ']' for layers | [S] to SAVE`;
+        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()} | Pos: (${this.selectedProp.x}, ${this.selectedProp.y}) | Scale: ${sx} | Layer: ${parentIdx}\n[Click name in Tree] to select | [👁] to Hide/Unhide | [H] to Toggle Panel | [S] to SAVE`;
     }
 
     exportStageLayout() {
@@ -884,14 +961,14 @@ class PlayStateScene {
         }
 
         const jsonString = JSON.stringify(layout, null, 2);
-        console.log("%c=== EXPORTED STAGE LAYOUT (SAVE THIS!) ===", "color: #2ed573; font-size: 16px; font-weight: bold;");
+        console.log("%c=== EXPORTED STAGE LAYOUT (PASTE THIS!) ===", "color: #2ed573; font-size: 16px; font-weight: bold;");
         console.log(jsonString);
 
         if (navigator.clipboard) {
             navigator.clipboard.writeText(jsonString).catch(() => {});
         }
 
-        alert("Stage layout exported to F12 Console & copied to clipboard!\nPress OK to continue.");
+        alert("Stage layout exported to F12 Console & copied to clipboard!\nPaste the code block to permanently lock it.");
     }
 
     setupStrumlines() {
@@ -1014,7 +1091,6 @@ class PlayStateScene {
     }
 
     setupHUD() {
-        // Health Bar (Bottom Center)
         this.healthBarCont = new PIXI.Container();
         this.healthBarCont.position.set(640, 645);
 
@@ -1040,7 +1116,6 @@ class PlayStateScene {
 
         this.hudContainer.addChild(this.healthBarCont);
 
-        // Score Text
         this.scoreText = new PIXI.Text('Score: 0 | Misses: 0 | Accuracy: ?', {
             fontFamily: 'Segoe UI, sans-serif',
             fontSize: 16,
@@ -1052,7 +1127,6 @@ class PlayStateScene {
         this.scoreText.position.set(640, 678);
         this.hudContainer.addChild(this.scoreText);
 
-        // Rating Text
         this.ratingText = new PIXI.Text('READY!', {
             fontFamily: 'Segoe UI, sans-serif',
             fontSize: 48,
@@ -1064,8 +1138,7 @@ class PlayStateScene {
         this.ratingText.position.set(1280 / 2, 350);
         this.hudContainer.addChild(this.ratingText);
 
-        // On-Screen Inspector HUD Badge
-        this.inspectorText = new PIXI.Text('[INSPECTOR]: Click any prop to edit | [S] to SAVE', {
+        this.inspectorText = new PIXI.Text('[PRESS H]: Toggle Scene Tree | [S] to SAVE', {
             fontFamily: 'Courier New, monospace',
             fontSize: 14,
             fontWeight: 'bold',
@@ -1148,7 +1221,6 @@ class PlayStateScene {
         this.bfIcon.scale.x += (1.0 - this.bfIcon.scale.x) * 0.15;
         this.bfIcon.scale.y += (1.0 - this.bfIcon.scale.y) * 0.15;
 
-        // Camera Smooth Panning
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -1293,6 +1365,9 @@ class PlayStateScene {
     }
 
     destroy() {
+        const treeDom = document.getElementById('scene-tree-panel');
+        if (treeDom) treeDom.remove();
+
         app.stage.removeChild(this.worldContainer);
         app.stage.removeChild(this.hudContainer);
         this.worldContainer.destroy({ children: true });
@@ -1494,12 +1569,12 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load All 3 Main Characters
+        // 1. Load Characters
         const dadChar = await loadCharacter(item.player2, false, false);
         const bfChar = await loadCharacter('bf', true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
-        // 2. Load Stage Background Images
+        // 2. Load Stage Pieces
         const stageData = {};
         const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette'];
 
@@ -1517,7 +1592,7 @@ async function launchSong(item) {
             }
         }
 
-        // 3. Load Animated Background Crewmates (Tawny, Minigrey, Shit)
+        // 3. Load Animated Background Crewmates
         const stageProps = {
             tawny: await loadAnimatedProp('tawny'),
             minigrey: await loadAnimatedProp('minigrey'),
