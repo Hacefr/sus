@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vs. Impostor Web Runner (Security DLC)</title>
+    
+    <!-- Pixi.js for Hardware-Accelerated WebGL & Shaders -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <!-- JSZip for in-memory mod loading -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Drag & Drop Overlay -->
+    <div id="drop-overlay">
+        <div class="drop-card">
+            <h1>VS. IMPOSTOR WEB RUNNER</h1>
+            <p class="subtitle">Drop your Base Game .zip and Security DLC .zip here</p>
+            <div id="status-box">Waiting for mod files...</div>
+            <p class="hint">You can drop both files together or one after the other!</p>
+        </div>
+    </div>
+
+    <!-- Freeplay UI -->
+    <div id="freeplay-screen" class="hidden">
+        <header>
+            <h2>FREEPLAY</h2>
+            <div class="header-actions">
+                <span id="mod-counter">0 Songs Loaded</span>
+                <button id="export-imp-btn" class="glow-btn">Export .IMP (Fast Pack)</button>
+            </div>
+        </header>
+
+        <div id="song-grid">
+            <!-- Dynamic song cards spawn here -->
+        </div>
+    </div>
+
+    <!-- WebGL Game Screen -->
+    <div id="game-container" class="hidden">
+        <!-- Pixi.js Canvas attaches here -->
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
