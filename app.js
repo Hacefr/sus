@@ -18,7 +18,7 @@ const VirtualFS = {
     stageJsons: {} 
 };
 
-// Permanent Stage Registry
+// Permanent Stage Registry (Your tuned layout for Security!)
 const STAGE_PRESETS = {
     security: {
         wall:     { x: 640, y: 409, scale: 0.54, layer: 0 },
@@ -109,14 +109,12 @@ async function ingestZip(file) {
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
         VirtualFS.assets[path] = entry;
 
-        // Auto-detect Stage JSON files
         if (path.includes('/stages/') && path.endsWith('.json')) {
             const p = entry.async('string').then(text => {
                 try {
                     const parsed = JSON.parse(text.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, ''));
                     const stageKey = path.split('/').pop().replace('.json', '');
                     VirtualFS.stageJsons[stageKey] = parsed;
-                    console.log(`%c[STAGE JSON LOADED] ${stageKey.toUpperCase()}`, "color: #ff9f43; font-weight: bold;");
                 } catch(e) {}
             });
             scanPromises.push(p);
@@ -233,7 +231,7 @@ async function ingestZip(file) {
             player = songKey.includes('suspect') ? 'pico' : 'bf';
         }
 
-        const stage = playData.stage || meta.stage || parsed.stage || (songKey.includes('suspect') ? 'security2' : 'security');
+        const stage = playData.stage || meta.stage || parsed.stage || (songKey.includes('suspect') ? 'security' : (songKey.includes('trot') ? 'horse' : 'security'));
 
         VirtualFS.charts[songKey] = {
             id: songKey,
@@ -390,9 +388,12 @@ function parseSparrowAtlas(baseTexture, xmlDoc) {
 }
 
 class DynamicAtlasCharacter {
-    constructor(baseTexture, animJson, spritemapJson, isPlayer = false, isGF = false) {
+    constructor(baseTexture, animJson, spritemapJson, charName = '', isPlayer = false, isGF = false) {
+        this.charName = charName.toLowerCase();
         this.isPlayer = isPlayer;
         this.isGF = isGF;
+        this.isPico = this.charName.includes('pico');
+        
         this.container = new PIXI.Container();
         this.displayContainer = new PIXI.Container();
         this.container.addChild(this.displayContainer);
@@ -474,7 +475,7 @@ class DynamicAtlasCharacter {
         this.holdTimer = 0;
         this.fps = 24;
 
-        const scale = 0.65;
+        const scale = isGF ? 0.62 : 0.65;
         this.container.scale.set(this.isPlayer ? scale : (this.isGF ? scale : -scale), scale);
 
         this.renderCurrentFrame();
@@ -554,12 +555,15 @@ class DynamicAtlasCharacter {
         const animMatrix = this.animMatrices[this.currentAnim] || new PIXI.Matrix();
         const rootMat = animMatrix.clone();
         
-        if (this.isPlayer) {
-            rootMat.translate(-405, -280);
+        // Accurate character local origins
+        if (this.isPico) {
+            rootMat.translate(116, -180); // Pico's exact center offset!
+        } else if (this.isPlayer) {
+            rootMat.translate(-405, -280); // BF center offset!
         } else if (this.isGF) {
-            rootMat.translate(-350, -320);
+            rootMat.translate(-350, -320); // GF speakers offset!
         } else {
-            rootMat.translate(-200, -320);
+            rootMat.translate(-200, -320); // Noob49 offset!
         }
 
         renderSymbol(symName, this.frame, rootMat, this.displayContainer);
@@ -654,12 +658,10 @@ class PlayStateScene {
 
         this.gfDanceLeft = false;
 
-        // Animated stage props
         this.tawnySprite = null;
         this.minigreySprite = null;
         this.shitSprite = null;
         this.discussSprite = null;
-        this.loBlackSprite = null;
 
         this.inspectableProps = {};
         this.selectedProp = null;
@@ -700,10 +702,10 @@ class PlayStateScene {
         this.stageBack = new PIXI.Container();
         this.stageFront = new PIXI.Container();
 
-        const preset = STAGE_PRESETS.security;
+        const stageName = (this.songItem.stage || 'security').toLowerCase();
+        const preset = STAGE_PRESETS[stageName] || STAGE_PRESETS.security;
 
         if (stageData && stageData.wall) {
-            // 1. Room Background Wall & Floor
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(preset.wall.x, preset.wall.y);
@@ -711,7 +713,6 @@ class PlayStateScene {
             this.stageBack.addChild(wall);
             this.makeInspectable('wall', wall, false);
 
-            // 2. Wall Shelf with Party Hat & Frame (props.png)
             if (stageData.props) {
                 const wallProps = new PIXI.Sprite(stageData.props);
                 wallProps.anchor.set(0.5);
@@ -721,7 +722,6 @@ class PlayStateScene {
                 this.makeInspectable('props', wallProps);
             }
 
-            // 3. Cabinets (Spans left shelf and right cabinet!)
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
                 cabs.anchor.set(0.5);
@@ -731,7 +731,6 @@ class PlayStateScene {
                 this.makeInspectable('cabinets', cabs);
             }
 
-            // 4. ANIMATED Tawny (Uses XML animation, NOT raw spritesheet!)
             if (stageProps && stageProps.tawny) {
                 const anim = stageProps.tawny.bop || Object.values(stageProps.tawny)[0];
                 this.tawnySprite = new PIXI.AnimatedSprite(anim);
@@ -743,7 +742,6 @@ class PlayStateScene {
                 this.makeInspectable('tawny', this.tawnySprite);
             }
 
-            // 5. Security Desk with Laptop
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5);
@@ -753,7 +751,6 @@ class PlayStateScene {
                 this.makeInspectable('table', desk);
             }
 
-            // 6. ANIMATED Shit / Poopet (Uses XML animation, NOT raw spritesheet!)
             if (stageProps && stageProps.shit) {
                 const anim = stageProps.shit.bop1 || Object.values(stageProps.shit)[0];
                 this.shitSprite = new PIXI.AnimatedSprite(anim);
@@ -765,7 +762,6 @@ class PlayStateScene {
                 this.makeInspectable('shit', this.shitSprite);
             }
 
-            // 7. Light Spotlight Beam
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
@@ -777,24 +773,15 @@ class PlayStateScene {
                 this.makeInspectable('light', light, false);
             }
 
-            // 8. Cutscene Discuss icon (Hidden by default!)
+            // Discuss screen (Only for Suspect cutscene!)
             if (stageData.discuss) {
                 this.discussSprite = new PIXI.Sprite(stageData.discuss);
                 this.discussSprite.anchor.set(0.5);
-                this.discussSprite.position.set(640, 200);
-                this.discussSprite.alpha = 0; // Starts invisible!
+                this.discussSprite.position.set(640, 250);
+                this.discussSprite.alpha = 0;
                 this.stageFront.addChild(this.discussSprite);
             }
 
-            // 9. Cutscene loBlack fade overlay (Hidden by default!)
-            this.loBlackSprite = new PIXI.Graphics();
-            this.loBlackSprite.beginFill(0x000000);
-            this.loBlackSprite.drawRect(-400, -200, 2080, 1120);
-            this.loBlackSprite.endFill();
-            this.loBlackSprite.alpha = 0; // Starts invisible!
-            this.stageFront.addChild(this.loBlackSprite);
-
-            // 10. Vignette
             if (stageData.vignette) {
                 const vig = new PIXI.Sprite(stageData.vignette);
                 vig.anchor.set(0.5);
@@ -815,21 +802,19 @@ class PlayStateScene {
     }
 
     setupCharacters(stageProps) {
-        const preset = STAGE_PRESETS.security;
+        const stageName = (this.songItem.stage || 'security').toLowerCase();
+        const preset = STAGE_PRESETS[stageName] || STAGE_PRESETS.security;
 
-        // GF on Speakers
         if (this.gf) {
             this.gf.container.position.set(preset.gf.x, preset.gf.y);
             this.worldContainer.addChild(this.gf.container);
             this.makeInspectable('gf', this.gf.container);
         }
 
-        // Dad / Opponent
         this.dad.container.position.set(preset.dad.x, preset.dad.y);
         this.worldContainer.addChild(this.dad.container);
         this.makeInspectable('dad', this.dad.container);
 
-        // ANIMATED Minigrey (Uses XML animation, NOT raw spritesheet!)
         if (stageProps && stageProps.minigrey) {
             const anim = stageProps.minigrey.idle || Object.values(stageProps.minigrey)[0];
             this.minigreySprite = new PIXI.AnimatedSprite(anim);
@@ -841,7 +826,6 @@ class PlayStateScene {
             this.makeInspectable('minigrey', this.minigreySprite);
         }
 
-        // BF / Player (Pico or BF)
         this.bf.container.position.set(preset.bf.x, preset.bf.y);
         this.worldContainer.addChild(this.bf.container);
         this.makeInspectable('bf', this.bf.container);
@@ -849,7 +833,6 @@ class PlayStateScene {
         this.worldContainer.addChild(this.stageFront);
     }
 
-    // --- SCENE TREE PANEL WITH FLIP FEATURE ---
     initSceneTreePanel() {
         let treeDom = document.getElementById('scene-tree-panel');
         if (!treeDom) {
@@ -1463,33 +1446,29 @@ function drawArrowShape(graphics, color, size = 32) {
     graphics.endFill();
 }
 
-// SCRIPTED MOMENTS FROM security2.hxc!
+// SONG-SPECIFIC STEP CUTSCENES
 function onStepHit(step) {
     if (playState) {
-        // Cutscene Discuss & loBlack Triggers
-        if (step === 48) {
-            if (playState.loBlackSprite) playState.loBlackSprite.alpha = 1;
-            playState.hudContainer.visible = false;
-        }
-        if (step === 60) {
-            if (playState.discussSprite) playState.discussSprite.alpha = 1;
-        }
-        if (step === 64) {
-            if (playState.discussSprite) playState.discussSprite.alpha = 0;
-            if (playState.loBlackSprite) playState.loBlackSprite.alpha = 0;
-            playState.hudContainer.visible = true;
-        }
+        const currentSong = playState.songItem.id.toLowerCase();
 
-        // Pico Gun Moments
-        if (step === 805) {
-            playState.bf.playAnim('lock in', true);
-        }
-        if (step === 812) {
-            playState.bf.playAnim('cock', true);
-            playState.dad.playAnim('right', true);
-        }
-        if (step === 816) {
-            playState.bf.playAnim('blast', true);
+        // ONLY RUN THESE CUTSCENES IF PLAYING 'SUSPECT'!
+        if (currentSong.includes('suspect')) {
+            if (step === 60 && playState.discussSprite) {
+                playState.discussSprite.alpha = 1;
+            }
+            if (step === 64 && playState.discussSprite) {
+                playState.discussSprite.alpha = 0;
+            }
+            if (step === 805) {
+                playState.bf.playAnim('lock in', true);
+            }
+            if (step === 812) {
+                playState.bf.playAnim('cock', true);
+                playState.dad.playAnim('right', true);
+            }
+            if (step === 816) {
+                playState.bf.playAnim('blast', true);
+            }
         }
     }
 }
@@ -1506,7 +1485,6 @@ function onBeatHit(beat) {
             playState.gf.playAnim(playState.gfDanceLeft ? 'idleleft' : 'idleright', true);
         }
 
-        // Bop Animated Props
         if (playState.tawnySprite && beat % 1 === 0) playState.tawnySprite.gotoAndPlay(0);
         if (playState.minigreySprite && beat % 1 === 0) playState.minigreySprite.gotoAndPlay(0);
         if (playState.shitSprite && beat % 2 === 0) playState.shitSprite.gotoAndPlay(0);
@@ -1599,7 +1577,7 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
             const baseTexture = new PIXI.BaseTexture(img);
             console.log(`%c[TEXTURE ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
             
-            return new DynamicAtlasCharacter(baseTexture, animJson, spritemapJson, isPlayer, isGF);
+            return new DynamicAtlasCharacter(baseTexture, animJson, spritemapJson, charName, isPlayer, isGF);
         } catch(err) {
             console.warn(`Failed loading Texture Atlas for ${charName}:`, err);
         }
@@ -1630,19 +1608,19 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
             const anims = parseSparrowAtlas(baseTexture, xmlDoc);
 
             console.log(`%c[SPARROW SHEET LOADED] ${charName.toUpperCase()}`, "color: #2ed573; font-weight: bold;");
-            return new DynamicAtlasCharacter(baseTexture, { SD: { S: [] }, AN: { TL: { L: [] } } }, { ATLAS: { SPRITES: [] } }, isPlayer, isGF);
+            return new DynamicAtlasCharacter(baseTexture, { SD: { S: [] }, AN: { TL: { L: [] } } }, { ATLAS: { SPRITES: [] } }, charName, isPlayer, isGF);
         } catch(e) {}
     }
 
     return createFallbackCharacter(isPlayer ? 0x00d2d3 : (isGF ? 0xa55eea : 0xff334b), isPlayer);
 }
 
-async function loadAnimatedProp(propName) {
+async function loadAnimatedProp(stageFolder, propName) {
     let pngEntry = null;
     let xmlEntry = null;
 
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        if (path.includes('bg/security/')) {
+        if (path.includes(`bg/${stageFolder}/`)) {
             if (path.endsWith(`${propName}.png`)) pngEntry = entry;
             if (path.endsWith(`${propName}.xml`)) xmlEntry = entry;
         }
@@ -1716,13 +1694,15 @@ async function launchSong(item) {
         const bfChar = await loadCharacter(item.player1, true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
-        // 2. Load Stage Background Images (Filters out spritesheets!)
+        // 2. Load Stage Dynamically (Matches song stage: security, beach, horse, medbay!)
         const stageData = {};
+        const stageFolder = (item.stage || 'security').toLowerCase().includes('sec') ? 'security' : (item.stage || 'security').toLowerCase();
+        
         const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette', 'discuss'];
-        const animatedBlacklist = ['tawny', 'minigrey', 'shit', 'player']; // NEVER load as static textures!
+        const animatedBlacklist = ['tawny', 'minigrey', 'shit', 'player'];
 
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-            if (path.includes('bg/security/')) {
+            if (path.includes(`bg/${stageFolder}/`)) {
                 const key = path.split('/').pop().replace(/\.(png|jpg)$/, '');
                 if (stageAssets.includes(key) && !animatedBlacklist.includes(key)) {
                     if (path.endsWith('.png') || path.endsWith('.jpg')) {
@@ -1736,11 +1716,11 @@ async function launchSong(item) {
             }
         }
 
-        // 3. Load Animated Props
+        // 3. Load Animated Background Crewmates
         const stageProps = {
-            tawny: await loadAnimatedProp('tawny'),
-            minigrey: await loadAnimatedProp('minigrey'),
-            shit: await loadAnimatedProp('shit')
+            tawny: await loadAnimatedProp(stageFolder, 'tawny'),
+            minigrey: await loadAnimatedProp(stageFolder, 'minigrey'),
+            shit: await loadAnimatedProp(stageFolder, 'shit')
         };
 
         playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData, stageProps);
