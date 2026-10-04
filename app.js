@@ -18,37 +18,71 @@ const VirtualFS = {
 };
 
 const dropOverlay = document.getElementById('drop-overlay');
+const stagedList = document.getElementById('staged-files-list');
+const startBtn = document.getElementById('start-engine-btn');
 const statusBox = document.getElementById('status-box');
 const freeplayScreen = document.getElementById('freeplay-screen');
 const songGrid = document.getElementById('song-grid');
 const modCounter = document.getElementById('mod-counter');
 
-// --- 3. DRAG AND DROP HANDLER ---
+const stagedFiles = [];
+
+// --- 3. STAGING DRAG AND DROP ---
 window.addEventListener('dragover', (e) => e.preventDefault());
-window.addEventListener('drop', async (e) => {
+window.addEventListener('drop', (e) => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files);
-    if (files.length === 0) return;
 
-    for (const file of files) {
+    files.forEach(file => {
+        if (file.name.endsWith('.zip') || file.name.endsWith('.imp')) {
+            if (!stagedFiles.some(f => f.name === file.name)) {
+                stagedFiles.push(file);
+            }
+        }
+    });
+
+    updateStagingUI();
+});
+
+function updateStagingUI() {
+    if (stagedFiles.length === 0) return;
+
+    stagedList.innerHTML = '';
+    stagedFiles.forEach(file => {
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+        const item = document.createElement('div');
+        item.className = 'staged-item';
+        item.innerHTML = `<span>✔ ${file.name}</span><span style="color:#747d8c">${sizeMB} MB</span>`;
+        stagedList.appendChild(item);
+    });
+
+    startBtn.classList.remove('hidden');
+    startBtn.innerText = `LOAD MODS & START (${stagedFiles.length} File${stagedFiles.length > 1 ? 's' : ''} Ready)`;
+}
+
+startBtn.addEventListener('click', async () => {
+    startBtn.disabled = true;
+    startBtn.classList.add('hidden');
+    statusBox.classList.remove('hidden');
+
+    for (const file of stagedFiles) {
         if (file.name.endsWith('.zip')) {
             await ingestZip(file);
-        } else if (file.name.endsWith('.imp')) {
-            statusBox.innerText = `Loading .imp package: ${file.name}...`;
         }
     }
 
     refreshFreeplayUI();
 });
 
-// --- 4. CODENAME & PSYCH SCANNER ---
+// --- 4. UNIVERSAL SCANNER (V-Slice, Codename & Psych) ---
 async function ingestZip(file) {
     statusBox.innerText = `Scanning: ${file.name}...`;
     const zip = await JSZip.loadAsync(file);
 
     statusBox.innerText = `Indexing charts & assets...`;
     const scanPromises = [];
-    const songMeta = {};
+    const vsliceMeta = {};
+    const vsliceCharts = {};
 
     zip.forEach((rawPath, entry) => {
         if (entry.dir) return;
@@ -56,18 +90,7 @@ async function ingestZip(file) {
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
         VirtualFS.assets[path] = entry;
 
-        if (path.endsWith('meta.json')) {
-            const p = entry.async('string').then(text => {
-                try {
-                    const parsed = JSON.parse(text.replace(/\/\/.*$/gm, ''));
-                    const parts = path.split('/');
-                    const songKey = parts[parts.length - 2];
-                    if (songKey) songMeta[songKey] = parsed;
-                } catch(e) {}
-            });
-            scanPromises.push(p);
-        }
-
+        // Catch Shaders (.frag)
         if (path.endsWith('.frag')) {
             const p = entry.async('string').then(shaderCode => {
                 const shaderName = path.split('/').pop().replace('.frag', '');
@@ -76,7 +99,32 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json')) {
+        // --- A. V-SLICE FORMAT: <song>-metadata.json ---
+        if (path.endsWith('-metadata.json')) {
+            const p = entry.async('string').then(text => {
+                try {
+                    const parsed = JSON.parse(text.replace(/\/\/.*$/gm, ''));
+                    const songName = path.split('/').pop().replace('-metadata.json', '');
+                    vsliceMeta[songName] = parsed;
+                } catch(e) {}
+            });
+            scanPromises.push(p);
+        }
+
+        // --- B. V-SLICE FORMAT: <song>-chart.json ---
+        if (path.endsWith('-chart.json')) {
+            const p = entry.async('string').then(text => {
+                try {
+                    const parsed = JSON.parse(text.replace(/\/\/.*$/gm, ''));
+                    const songName = path.split('/').pop().replace('-chart.json', '');
+                    vsliceCharts[songName] = { parsed, path };
+                } catch(e) {}
+            });
+            scanPromises.push(p);
+        }
+
+        // --- C. CODENAME & PSYCH FORMATS ---
+        if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json') && !path.endsWith('-metadata.json') && !path.endsWith('-chart.json')) {
             const p = entry.async('string').then(jsonText => {
                 try {
                     const cleanJson = jsonText.replace(/\/\/.*$/gm, '');
@@ -97,11 +145,8 @@ async function ingestZip(file) {
 
                         if (!fileName.includes('-easy') && fileName !== 'easy.json') {
                             const songKey = folderName.toLowerCase().trim();
-                            
                             let rawName = songKey;
                             if (typeof songData.song === 'string') rawName = songData.song;
-                            else if (songData.song && typeof songData.song.song === 'string') rawName = songData.song.song;
-                            else if (songMeta[songKey] && typeof songMeta[songKey].name === 'string') rawName = songMeta[songKey].name;
 
                             let cleanSpeed = songData.speed || parsed.scrollSpeed || 2.5;
                             if (typeof cleanSpeed === 'object' && cleanSpeed !== null) {
@@ -125,12 +170,42 @@ async function ingestZip(file) {
     });
 
     await Promise.all(scanPromises);
+
+    // Merge V-Slice Charts into VirtualFS
+    for (const [songKey, cObj] of Object.entries(vsliceCharts)) {
+        const meta = vsliceMeta[songKey] || {};
+        const parsed = cObj.parsed;
+
+        let cleanSpeed = 2.5;
+        if (parsed.scrollSpeed) {
+            cleanSpeed = (typeof parsed.scrollSpeed === 'object') 
+                ? (parsed.scrollSpeed.normal || parsed.scrollSpeed.hard || 2.5) 
+                : parsed.scrollSpeed;
+        }
+
+        const songName = meta.songName || meta.name || songKey;
+        const bpm = meta.bpm || (meta.timeChanges && meta.timeChanges[0] ? meta.timeChanges[0].bpm : 150);
+
+        VirtualFS.charts[songKey] = {
+            id: songKey,
+            name: String(songName),
+            bpm: bpm,
+            speed: parseFloat(cleanSpeed) || 2.5,
+            chartData: parsed,
+            chartPath: cObj.path
+        };
+
+        console.log(`%c[V-SLICE CHART LOADED] ${songName.toUpperCase()} -> ${cObj.path}`, "color: #00d2d3; font-weight: bold;");
+    }
 }
 
 // --- 5. FREEPLAY MENU ---
 function refreshFreeplayUI() {
     const songKeys = Object.keys(VirtualFS.charts);
-    if (songKeys.length === 0) return;
+    if (songKeys.length === 0) {
+        statusBox.innerText = "No charts detected in dropped files!";
+        return;
+    }
 
     dropOverlay.classList.add('hidden');
     freeplayScreen.classList.remove('hidden');
@@ -213,9 +288,7 @@ const Conductor = {
     }
 };
 
-// --- CORRECTED ARROW ROTATIONS & COLORS ---
-const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; // Left (Purple), Down (Cyan), Up (Green), Right (Red)
-// FIXED: Down = Math.PI (180deg down), Up = 0 (pointing up)
+const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
 const ARROW_ANGLES = [-Math.PI / 2, Math.PI, 0, Math.PI / 2];
 
 function drawArrowShape(graphics, color, size = 32) {
@@ -229,7 +302,6 @@ function drawArrowShape(graphics, color, size = 32) {
     graphics.endFill();
 }
 
-// --- GAMEPLAY MANAGER ---
 let playState = null;
 
 class PlayStateScene {
@@ -281,7 +353,7 @@ class PlayStateScene {
         }
     }
 
-    // --- BULLETPROOF UNIVERSAL CHART PARSER ---
+    // --- UNIVERSAL NOTE PARSER (V-Slice, Codename & Psych) ---
     parseChartNotes(chart) {
         this.notes = [];
         if (!chart) return;
@@ -289,32 +361,45 @@ class PlayStateScene {
         const data = chart.chartData || chart;
         const songObj = (data.song && typeof data.song === 'object') ? data.song : data;
 
-        // 1. CODENAME ENGINE STRUM LINES
+        // --- 1. V-SLICE FORMAT ({ notes: { normal: [ { t, d, l }, ... ] } }) ---
+        if (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) {
+            const diffNotes = data.notes.normal || data.notes.hard || data.notes.default || Object.values(data.notes)[0];
+            if (Array.isArray(diffNotes)) {
+                diffNotes.forEach(n => {
+                    const rawDir = n.d !== undefined ? n.d : (n.dir || 0);
+                    this.notes.push({
+                        time: n.t !== undefined ? n.t : n.time,
+                        dir: rawDir % 4,
+                        isPlayer: (rawDir < 4),
+                        sustain: n.l !== undefined ? n.l : (n.sLen || 0),
+                        hit: false, missed: false, sprite: null, tailSprite: null
+                    });
+                });
+            }
+        }
+
+        // --- 2. CODENAME ENGINE STRUM LINES ---
         const strumLines = data.strumLines || (data.song && data.song.strumLines);
-        if (Array.isArray(strumLines)) {
+        if (this.notes.length === 0 && Array.isArray(strumLines)) {
             strumLines.forEach((strum, lineIndex) => {
                 const isPlayer = (strum.type === 1) || (lineIndex === 1);
                 if (Array.isArray(strum.notes)) {
                     strum.notes.forEach(n => {
                         this.notes.push({
-                            time: n.time,
+                            time: n.time || 0,
                             dir: (n.id !== undefined ? n.id : (n.dir || 0)) % 4,
                             isPlayer: isPlayer,
                             sustain: n.sLen || n.sustain || 0,
-                            hit: false,
-                            missed: false,
-                            sprite: null,
-                            tailSprite: null
+                            hit: false, missed: false, sprite: null, tailSprite: null
                         });
                     });
                 }
             });
         }
-        // 2. PSYCH / LEATHER / NMV2 NOTES (Handles Arrays AND Dictionaries)
-        else {
-            let sections = songObj.notes || data.notes;
 
-            // If notes is a dictionary/object, convert to array safely
+        // --- 3. PSYCH / NMV2 / SECTION NOTES ---
+        if (this.notes.length === 0) {
+            let sections = songObj.notes || data.notes || [];
             if (sections && typeof sections === 'object' && !Array.isArray(sections)) {
                 sections = Object.values(sections);
             }
@@ -323,25 +408,18 @@ class PlayStateScene {
                 sections.forEach(section => {
                     if (!section) return;
 
-                    // Standard sectionNotes list
                     if (Array.isArray(section.sectionNotes)) {
                         section.sectionNotes.forEach(n => {
                             if (!Array.isArray(n) || n.length < 2) return;
                             const rawDir = n[1];
-                            if (rawDir < 0) return; // skip events
-
-                            const isPlayer = (rawDir < 4);
-                            const dir = rawDir % 4;
+                            if (rawDir < 0) return;
 
                             this.notes.push({
                                 time: n[0],
-                                dir: dir,
-                                isPlayer: isPlayer,
+                                dir: rawDir % 4,
+                                isPlayer: (rawDir < 4),
                                 sustain: n[2] || 0,
-                                hit: false,
-                                missed: false,
-                                sprite: null,
-                                tailSprite: null
+                                hit: false, missed: false, sprite: null, tailSprite: null
                             });
                         });
                     }
@@ -369,7 +447,7 @@ class PlayStateScene {
             }
         });
 
-        console.log(`[GAMEPLAY] Successfully parsed ${this.notes.length} notes!`);
+        console.log(`[GAMEPLAY] Parsed ${this.notes.length} notes for this song!`);
     }
 
     setupHUD() {
@@ -432,7 +510,7 @@ class PlayStateScene {
                 continue;
             }
 
-            // Draw visible notes
+            // Render Notes in Viewport
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
                 const noteY = receptorY + (diff * scrollMult);
@@ -528,7 +606,6 @@ function onBeatHit(beat) {
     }
 }
 
-// --- TICKER LOOP ---
 app.ticker.add((delta) => {
     Conductor.update();
 
@@ -541,7 +618,6 @@ app.ticker.add((delta) => {
     }
 });
 
-// --- KEYBOARD CONTROLS (D-F-J-K & ARROWS) ---
 const KEY_MAP = {
     'KeyD': 0, 'ArrowLeft': 0,
     'KeyF': 1, 'ArrowDown': 1,
@@ -574,14 +650,14 @@ async function launchSong(item) {
     if (playState) playState.destroy();
 
     const songId = item.id.toLowerCase();
-    // Normalize string so "don't-lied" matches "dont-lied" or "dontlied"
     const cleanId = songId.replace(/[^a-z0-9]/g, '');
 
     const audioToLoad = [];
 
+    // Finds matching audio regardless of folder structure
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
         const cleanPath = path.replace(/[^a-z0-9\/\.]/g, '');
-        if (cleanPath.includes(`/${cleanId}/`) || cleanPath.includes(`songs/${cleanId}`)) {
+        if (cleanPath.includes(`/${cleanId}/`) || cleanPath.includes(`songs/${cleanId}`) || cleanPath.includes(`/${cleanId}-inst`) || cleanPath.includes(`/${cleanId}-voices`)) {
             if (cleanPath.endsWith('.ogg')) {
                 audioToLoad.push({ path, entry });
             }
@@ -622,7 +698,6 @@ async function launchSong(item) {
     }
 }
 
-// --- EXIT BACK TO FREEPLAY ---
 function returnToFreeplay() {
     Conductor.stop();
     if (playState) {
