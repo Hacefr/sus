@@ -11,7 +11,7 @@ document.getElementById('game-container').appendChild(app.view);
 
 // --- 2. ADDITIVE VIRTUAL FILE SYSTEM ---
 const VirtualFS = {
-    charts: {},      // songName -> { chartData, meta }
+    charts: {},      // songKey -> { id, name, bpm, speed, chartData, chartPath }
     assets: {},      // relativePath -> JSZip Entry
     shaders: {}      // name -> GLSL code string
 };
@@ -41,7 +41,7 @@ window.addEventListener('drop', async (e) => {
     refreshFreeplayUI();
 });
 
-// --- 4. CODENAME & PSYCH ENGINE SCANNER ---
+// --- 4. MERGED UNIVERSAL & CODENAME SCANNER ---
 async function ingestZip(file) {
     statusBox.innerText = `Scanning: ${file.name}...`;
     const zip = await JSZip.loadAsync(file);
@@ -49,8 +49,8 @@ async function ingestZip(file) {
     statusBox.innerText = `Parsing charts & assets from: ${file.name}...`;
     const scanPromises = [];
 
-    // Temporary storage to merge meta.json and normal.json
-    const pendingSongs = {};
+    // Temporary storage for metadata
+    const songMeta = {};
 
     zip.forEach((rawPath, entry) => {
         if (entry.dir) return;
@@ -58,65 +58,20 @@ async function ingestZip(file) {
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
         VirtualFS.assets[path] = entry;
 
-        // --- A. DETECT CODENAME CHARTS: songs/<songName>/data/normal.json ---
-        const codenameChartMatch = path.match(/(?:^|\/)songs\/([^\/]+)\/data\/(normal|hard)\.json$/);
-        if (codenameChartMatch) {
-            const songFolder = codenameChartMatch[1].toLowerCase().trim();
-            const diff = codenameChartMatch[2];
-
-            const p = entry.async('string').then(jsonText => {
+        // Catch Codename meta.json files
+        if (path.endsWith('meta.json')) {
+            const p = entry.async('string').then(text => {
                 try {
-                    const parsed = JSON.parse(jsonText.replace(/\/\/.*$/gm, ''));
-                    if (!pendingSongs[songFolder]) pendingSongs[songFolder] = {};
-                    // Prefer hard or normal
-                    if (!pendingSongs[songFolder].chart || diff === 'normal' || diff === 'hard') {
-                        pendingSongs[songFolder].chart = parsed;
-                        pendingSongs[songFolder].chartPath = path;
-                    }
-                } catch(err) {
-                    console.warn("Failed parsing chart:", path);
-                }
+                    const parsed = JSON.parse(text.replace(/\/\/.*$/gm, ''));
+                    const parts = path.split('/');
+                    const songKey = parts[parts.length - 2];
+                    if (songKey) songMeta[songKey] = parsed;
+                } catch(e) {}
             });
             scanPromises.push(p);
         }
 
-        // --- B. DETECT CODENAME METADATA: songs/<songName>/meta.json ---
-        const metaMatch = path.match(/(?:^|\/)songs\/([^\/]+)\/meta\.json$/);
-        if (metaMatch) {
-            const songFolder = metaMatch[1].toLowerCase().trim();
-            const p = entry.async('string').then(jsonText => {
-                try {
-                    const meta = JSON.parse(jsonText.replace(/\/\/.*$/gm, ''));
-                    if (!pendingSongs[songFolder]) pendingSongs[songFolder] = {};
-                    pendingSongs[songFolder].meta = meta;
-                } catch(err) {}
-            });
-            scanPromises.push(p);
-        }
-
-        // --- C. DETECT STANDARD PSYCH CHARTS: data/<songName>/<songName>.json ---
-        const psychChartMatch = path.match(/(?:^|\/)data\/([^\/]+)\/([^\/]+)\.json$/);
-        if (psychChartMatch && !path.includes('/stages/')) {
-            const songFolder = psychChartMatch[1].toLowerCase().trim();
-            const fileName = psychChartMatch[2];
-
-            if (fileName !== 'events' && fileName !== 'picospeaker') {
-                const p = entry.async('string').then(jsonText => {
-                    try {
-                        const parsed = JSON.parse(jsonText.replace(/\/\/.*$/gm, ''));
-                        const songData = parsed.song ? parsed.song : parsed;
-                        if (songData && (songData.notes || songData.bpm)) {
-                            if (!pendingSongs[songFolder]) pendingSongs[songFolder] = {};
-                            pendingSongs[songFolder].chart = songData;
-                            pendingSongs[songFolder].chartPath = path;
-                        }
-                    } catch(err) {}
-                });
-                scanPromises.push(p);
-            }
-        }
-
-        // --- D. DETECT SHADERS ---
+        // Catch Shaders (.frag files)
         if (path.endsWith('.frag')) {
             const p = entry.async('string').then(shaderCode => {
                 const shaderName = path.split('/').pop().replace('.frag', '');
@@ -125,34 +80,61 @@ async function ingestZip(file) {
             });
             scanPromises.push(p);
         }
+
+        // Catch ALL potential charts (.json)
+        if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json')) {
+            const p = entry.async('string').then(jsonText => {
+                try {
+                    const cleanJson = jsonText.replace(/\/\/.*$/gm, '');
+                    const parsed = JSON.parse(cleanJson);
+                    const songData = parsed.song ? parsed.song : parsed;
+
+                    // Verify it's an actual chart (Codename strumLines OR Psych notes array)
+                    const hasNotes = Array.isArray(songData.notes) || Array.isArray(parsed.strumLines);
+                    const hasTiming = songData.bpm || parsed.bpm || songData.speed || parsed.scrollSpeed;
+
+                    if (hasNotes || hasTiming) {
+                        const parts = path.split('/');
+                        const fileName = parts[parts.length - 1];
+                        
+                        // Extract clean song folder name
+                        // e.g., "assets/songs/sussus-moogus/data/normal.json" -> "sussus-moogus"
+                        let folderName = parts[parts.length - 2];
+                        if (folderName === 'data' && parts.length >= 3) {
+                            folderName = parts[parts.length - 3];
+                        }
+
+                        // Avoid registering easy charts over normal/hard
+                        if (!fileName.includes('-easy') && fileName !== 'easy.json') {
+                            const songKey = folderName.toLowerCase().trim();
+                            
+                            // Determine display name safely without crashing
+                            let rawName = songKey;
+                            if (typeof songData.song === 'string') rawName = songData.song;
+                            else if (songData.song && typeof songData.song.song === 'string') rawName = songData.song.song;
+                            else if (songMeta[songKey] && typeof songMeta[songKey].name === 'string') rawName = songMeta[songKey].name;
+
+                            VirtualFS.charts[songKey] = {
+                                id: songKey,
+                                name: String(rawName), // Guaranteed to be a string
+                                bpm: songData.bpm || parsed.bpm || 150,
+                                speed: songData.speed || parsed.scrollSpeed || 2.5,
+                                chartData: parsed,
+                                chartPath: path
+                            };
+
+                            console.log(`%c[CHART FOUND] ${String(rawName).toUpperCase()} -> ${path}`, "color: #2ed573; font-weight: bold;");
+                        }
+                    }
+                } catch(err) {
+                    // Ignore invalid JSONs
+                }
+            });
+            scanPromises.push(p);
+        }
     });
 
     await Promise.all(scanPromises);
-
-    // Merge pending chart data into VirtualFS.charts
-    for (const [songKey, data] of Object.entries(pendingSongs)) {
-        if (data.chart) {
-            const meta = data.meta || {};
-            const chart = data.chart;
-
-            // Normalize song title and BPM between Codename & Psych
-            const displayName = meta.name || chart.song || songKey;
-            const bpm = meta.bpm || chart.bpm || (chart.meta ? chart.meta.bpm : 150);
-            const speed = chart.scrollSpeed || chart.speed || 2.5;
-
-            VirtualFS.charts[songKey] = {
-                id: songKey,
-                name: displayName,
-                bpm: bpm,
-                speed: speed,
-                chartData: chart,
-                chartPath: data.chartPath,
-                meta: meta
-            };
-
-            console.log(`%c[CHART FOUND] ${displayName.toUpperCase()} (Path: ${data.chartPath})`, "color: #2ed573; font-weight: bold;");
-        }
-    }
 }
 
 // --- 5. BUILD THE FREEPLAY MENU ---
@@ -160,7 +142,7 @@ function refreshFreeplayUI() {
     const songKeys = Object.keys(VirtualFS.charts);
     
     if (songKeys.length === 0) {
-        statusBox.innerText = "No charts detected! Open F12 Console to see indexed files.";
+        statusBox.innerText = "No charts detected! Check Console (F12).";
         return;
     }
 
@@ -170,14 +152,15 @@ function refreshFreeplayUI() {
     songGrid.innerHTML = '';
     modCounter.innerText = `${songKeys.length} Songs Loaded`;
 
-    // Sort alphabetically
+    // Alphabetical sort
     songKeys.sort().forEach(key => {
         const item = VirtualFS.charts[key];
+        const safeDisplayName = String(item.name || key).toUpperCase();
         
         const card = document.createElement('div');
         card.className = 'song-card';
         card.innerHTML = `
-            <h3>${item.name.toUpperCase()}</h3>
+            <h3>${safeDisplayName}</h3>
             <div class="song-meta">
                 <span>BPM: <strong>${item.bpm}</strong></span>
                 <span>Speed: <strong>${item.speed}</strong></span>
@@ -195,7 +178,6 @@ function selectSong(item) {
     console.log("Song ID:", item.id);
     console.log("Chart Path:", item.chartPath);
     console.log("BPM:", item.bpm);
-    console.log("Full Chart Data:", item.chartData);
 
-    alert(`Ready for Milestone 2!\nLoaded: ${item.name}\nBPM: ${item.bpm}\nSpeed: ${item.speed}`);
+    alert(`Ready for Milestone 2!\nLoaded: ${String(item.name).toUpperCase()}\nBPM: ${item.bpm}\nSpeed: ${item.speed}`);
 }
