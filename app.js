@@ -296,7 +296,7 @@ const Conductor = {
 };
 
 // ========================================================
-// --- DYNAMIC TEXTURE ATLAS CHARACTER ---
+// --- DYNAMIC TEXTURE ATLAS CHARACTER (ALIGNED) ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
@@ -322,41 +322,59 @@ class DynamicAtlasCharacter {
             }
         }
 
-        // INTELLIGENT ANIMATION REGISTRATION
-        // Strictly prevents 'copy', 'alt', or 'shift' from overriding normal poses!
+        // Build Master Alignment Matrix Map from AN.TL.L (Cancels out 500px jumping!)
+        const rootMatrices = {};
+        if (animJson.AN && animJson.AN.TL && animJson.AN.TL.L) {
+            for (const layer of animJson.AN.TL.L) {
+                for (const fr of layer.FR || []) {
+                    for (const el of fr.E || []) {
+                        if (el.SI && el.SI.SN) {
+                            rootMatrices[el.SI.SN] = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
+                        }
+                    }
+                }
+            }
+        }
+
         this.animMap = {};
+        this.animMatrices = {};
         
         for (const symName of Object.keys(this.symbols)) {
             const lower = symName.toLowerCase();
             const isCopyOrAlt = lower.includes('copy') || lower.includes('alt') || lower.includes('shift') || lower.includes('dark');
 
-            // 1. Primary Normal Animations (White shirt / normal BF)
+            const assignAnim = (key) => {
+                this.animMap[key] = symName;
+                this.animMatrices[key] = rootMatrices[symName] || new PIXI.Matrix();
+            };
+
+            // 1. Normal Colorful Poses
             if (lower.includes('idle') && !isCopyOrAlt && !this.animMap['idle']) {
-                this.animMap['idle'] = symName;
+                assignAnim('idle');
             }
             else if (lower.includes('left') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['left']) {
-                this.animMap['left'] = symName;
-                this.animMap['singleft'] = symName;
+                assignAnim('left');
+                assignAnim('singleft');
             }
             else if (lower.includes('down') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['down']) {
-                this.animMap['down'] = symName;
-                this.animMap['singdown'] = symName;
+                assignAnim('down');
+                assignAnim('singdown');
             }
             else if (lower.includes('up') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['up']) {
-                this.animMap['up'] = symName;
-                this.animMap['singup'] = symName;
+                assignAnim('up');
+                assignAnim('singup');
             }
             else if (lower.includes('right') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['right']) {
-                this.animMap['right'] = symName;
-                this.animMap['singright'] = symName;
+                assignAnim('right');
+                assignAnim('singright');
             }
 
-            // 2. Dedicated Miss Animations (Purple / bruised BF!)
+            // 2. Dedicated Purple Miss Poses
             if (lower.includes('miss')) {
-                if (lower.includes('left')) this.animMap['singleftmiss'] = symName;
-                if (lower.includes('down')) this.animMap['singdownmiss'] = symName;
-                if (lower.includes('up')) this.animMap['singupmiss'] = symName;
-                if (lower.includes('right')) this.animMap['singrightmiss'] = symName;
+                if (lower.includes('left')) assignAnim('singleftmiss');
+                if (lower.includes('down')) assignAnim('singdownmiss');
+                if (lower.includes('up')) assignAnim('singupmiss');
+                if (lower.includes('right')) assignAnim('singrightmiss');
             }
         }
 
@@ -443,8 +461,17 @@ class DynamicAtlasCharacter {
             }
         }
 
-        const rootMat = new PIXI.Matrix();
-        rootMat.translate(-200, -320);
+        // Apply Counter-Alignment Matrix to cancel out teleporting!
+        const animMatrix = this.animMatrices[this.currentAnim] || new PIXI.Matrix();
+        const rootMat = animMatrix.clone();
+        
+        // Center feet on floor
+        if (this.isPlayer) {
+            rootMat.translate(-405, -280);
+        } else {
+            rootMat.translate(-200, -320);
+        }
+
         renderSymbol(symName, this.frame, rootMat, this.displayContainer);
     }
 
@@ -794,7 +821,7 @@ class PlayStateScene {
                 continue;
             }
 
-            // Player Miss -> Triggers Purple Miss Animation!
+            // Player Miss
             if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
@@ -804,7 +831,6 @@ class PlayStateScene {
                 this.showRating("MISS", 0xff334b);
                 this.updateScore();
 
-                // PLAY PURPLE MISS ANIMATION!
                 const missAnims = ['singleftmiss', 'singdownmiss', 'singupmiss', 'singrightmiss'];
                 this.bf.playAnim(missAnims[n.dir] || 'singleftmiss', true);
                 continue;
@@ -847,7 +873,6 @@ class PlayStateScene {
         const songPos = Conductor.songPosition;
         this.hitReceptor(dir, true);
         
-        // NORMAL COLORFUL SINGING (No longer purple!)
         const anims = ['left', 'down', 'up', 'right'];
         this.bf.playAnim(anims[dir], true);
         this.camTargetX = 820;
