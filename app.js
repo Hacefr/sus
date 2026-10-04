@@ -10,11 +10,29 @@ const app = new PIXI.Application({
 const gameContainer = document.getElementById('game-container');
 gameContainer.appendChild(app.view);
 
-// --- 2. ADDITIVE VIRTUAL FILE SYSTEM ---
+// --- 2. ADDITIVE VIRTUAL FILE SYSTEM & STAGE PRESETS ---
 const VirtualFS = {
     charts: {},      
     assets: {},      
     shaders: {}      
+};
+
+// PERMANENT STAGE REGISTRY (YOUR EXPORTED COORDINATES BAKED IN!)
+const STAGE_PRESETS = {
+    security: {
+        wall:     { x: 640, y: 409, scale: 0.54, layer: 0 },
+        light:    { x: 640, y: -40, scale: 0.54, layer: 0 },
+        shit:     { x: 627, y: 549, scale: 0.65, layer: 1 },
+        vignette: { x: 640, y: 360, scale: 0.57, layer: 1 },
+        props:    { x: 654, y: 217, scale: 0.63, layer: 2 },
+        cabinets: { x: 712, y: 254, scale: 0.66, layer: 3 },
+        tawny:    { x: 260, y: 530, scale: 0.62, layer: 4 },
+        table:    { x: 587, y: 428, scale: 0.54, layer: 5 },
+        gf:       { x: 885, y: 564, scale: 0.62, layer: 1 },
+        dad:      { x: 380, y: 600, scale: 0.65, layer: 2 },
+        minigrey: { x: 300, y: 650, scale: 0.65, layer: 3 },
+        bf:       { x: 991, y: 640, scale: 0.65, layer: 4 }
+    }
 };
 
 const dropOverlay = document.getElementById('drop-overlay');
@@ -426,7 +444,8 @@ class DynamicAtlasCharacter {
         this.holdTimer = 0;
         this.fps = 24;
 
-        const scale = 0.65;
+        // Custom baked scale if defined
+        const scale = isGF ? 0.62 : 0.65;
         this.container.scale.set(this.isPlayer ? scale : (this.isGF ? scale : -scale), scale);
 
         this.renderCurrentFrame();
@@ -610,7 +629,6 @@ class PlayStateScene {
         this.minigreySprite = null;
         this.shitSprite = null;
 
-        // Inspector Registry
         this.inspectableProps = {};
         this.selectedProp = null;
         this.selectionBox = new PIXI.Graphics();
@@ -641,7 +659,7 @@ class PlayStateScene {
                 this.selectInspectableProp(displayObj);
             });
         } else {
-            displayObj.eventMode = 'none'; // Overlays like vignette will NEVER block clicks!
+            displayObj.eventMode = 'none';
         }
         this.inspectableProps[name] = displayObj;
     }
@@ -650,15 +668,14 @@ class PlayStateScene {
         this.stageBack = new PIXI.Container();
         this.stageFront = new PIXI.Container();
 
-        if (stageData && stageData.wall) {
-            const rawWidth = stageData.wall.width || 1920;
-            const stageScale = 1280 / rawWidth;
+        const preset = STAGE_PRESETS[this.songItem.stage || 'security'] || STAGE_PRESETS.security;
 
+        if (stageData && stageData.wall) {
             // 1. Room Background Wall & Floor
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
-            wall.position.set(640, 360);
-            wall.scale.set(stageScale);
+            wall.position.set(preset.wall.x, preset.wall.y);
+            wall.scale.set(preset.wall.scale);
             this.stageBack.addChild(wall);
             this.makeInspectable('wall', wall, false);
 
@@ -666,40 +683,40 @@ class PlayStateScene {
             if (stageData.props) {
                 const wallProps = new PIXI.Sprite(stageData.props);
                 wallProps.anchor.set(0.5);
-                wallProps.position.set(640, 360);
-                wallProps.scale.set(stageScale);
+                wallProps.position.set(preset.props.x, preset.props.y);
+                wallProps.scale.set(preset.props.scale);
                 this.stageBack.addChild(wallProps);
                 this.makeInspectable('props', wallProps);
             }
 
-            // 3. Cabinets (Spans left shelf and right cabinet!)
+            // 3. Cabinets
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
                 cabs.anchor.set(0.5);
-                cabs.position.set(640, 360);
-                cabs.scale.set(stageScale);
+                cabs.position.set(preset.cabinets.x, preset.cabinets.y);
+                cabs.scale.set(preset.cabinets.scale);
                 this.stageBack.addChild(cabs);
                 this.makeInspectable('cabinets', cabs);
             }
 
-            // 4. Tawny (Brown Crewmate behind desk)
+            // 4. Tawny (Behind desk)
             if (stageProps && stageProps.tawny) {
                 const anim = stageProps.tawny.bop || Object.values(stageProps.tawny)[0];
                 this.tawnySprite = new PIXI.AnimatedSprite(anim);
                 this.tawnySprite.anchor.set(0.5, 1.0);
-                this.tawnySprite.position.set(260, 480);
-                this.tawnySprite.scale.set(0.65);
+                this.tawnySprite.position.set(preset.tawny.x, preset.tawny.y);
+                this.tawnySprite.scale.set(preset.tawny.scale);
                 this.tawnySprite.loop = false;
                 this.stageBack.addChild(this.tawnySprite);
                 this.makeInspectable('tawny', this.tawnySprite);
             }
 
-            // 5. Security Desk with Laptop & Flower Pot
+            // 5. Security Desk
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5);
-                desk.position.set(640, 360);
-                desk.scale.set(stageScale);
+                desk.position.set(preset.table.x, preset.table.y);
+                desk.scale.set(preset.table.scale);
                 this.stageBack.addChild(desk);
                 this.makeInspectable('table', desk);
             }
@@ -709,31 +726,31 @@ class PlayStateScene {
                 const anim = stageProps.shit.bop1 || Object.values(stageProps.shit)[0];
                 this.shitSprite = new PIXI.AnimatedSprite(anim);
                 this.shitSprite.anchor.set(0.5, 1.0);
-                this.shitSprite.position.set(470, 420);
-                this.shitSprite.scale.set(0.65);
+                this.shitSprite.position.set(preset.shit.x, preset.shit.y);
+                this.shitSprite.scale.set(preset.shit.scale);
                 this.shitSprite.loop = false;
                 this.stageBack.addChild(this.shitSprite);
                 this.makeInspectable('shit', this.shitSprite);
             }
 
-            // 7. Light Spotlight Beam (Overhead - No click intercept!)
+            // 7. Light Spotlight Beam
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
-                light.position.set(640, -40);
-                light.scale.set(stageScale);
+                light.position.set(preset.light.x, preset.light.y);
+                light.scale.set(preset.light.scale);
                 light.blendMode = PIXI.BLEND_MODES.ADD;
                 light.alpha = 0.55;
                 this.stageFront.addChild(light);
                 this.makeInspectable('light', light, false);
             }
 
-            // 8. Vignette (Dark borders - No click intercept!)
+            // 8. Vignette
             if (stageData.vignette) {
                 const vig = new PIXI.Sprite(stageData.vignette);
                 vig.anchor.set(0.5);
-                vig.position.set(640, 360);
-                vig.scale.set(stageScale);
+                vig.position.set(preset.vignette.x, preset.vignette.y);
+                vig.scale.set(preset.vignette.scale);
                 this.stageFront.addChild(vig);
                 this.makeInspectable('vignette', vig, false);
             }
@@ -749,15 +766,17 @@ class PlayStateScene {
     }
 
     setupCharacters(stageProps) {
-        // GF
+        const preset = STAGE_PRESETS[this.songItem.stage || 'security'] || STAGE_PRESETS.security;
+
+        // GF on Speakers
         if (this.gf) {
-            this.gf.container.position.set(670, 610);
+            this.gf.container.position.set(preset.gf.x, preset.gf.y);
             this.worldContainer.addChild(this.gf.container);
             this.makeInspectable('gf', this.gf.container);
         }
 
         // Dad / Noob49
-        this.dad.container.position.set(230, 640);
+        this.dad.container.position.set(preset.dad.x, preset.dad.y);
         this.worldContainer.addChild(this.dad.container);
         this.makeInspectable('dad', this.dad.container);
 
@@ -766,22 +785,21 @@ class PlayStateScene {
             const anim = stageProps.minigrey.idle || Object.values(stageProps.minigrey)[0];
             this.minigreySprite = new PIXI.AnimatedSprite(anim);
             this.minigreySprite.anchor.set(0.5, 1.0);
-            this.minigreySprite.position.set(90, 680);
-            this.minigreySprite.scale.set(0.65);
+            this.minigreySprite.position.set(preset.minigrey.x, preset.minigrey.y);
+            this.minigreySprite.scale.set(preset.minigrey.scale);
             this.minigreySprite.loop = false;
             this.worldContainer.addChild(this.minigreySprite);
             this.makeInspectable('minigrey', this.minigreySprite);
         }
 
-        // BF
-        this.bf.container.position.set(870, 630);
+        // BF on Carpet
+        this.bf.container.position.set(preset.bf.x, preset.bf.y);
         this.worldContainer.addChild(this.bf.container);
         this.makeInspectable('bf', this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
     }
 
-    // --- SCENE HIERARCHY TREE PANEL (TOGGLED BY 'H') ---
     initSceneTreePanel() {
         let treeDom = document.getElementById('scene-tree-panel');
         if (!treeDom) {
@@ -792,13 +810,13 @@ class PlayStateScene {
                 background: rgba(15, 18, 26, 0.92); border: 1px solid #00d2d3; border-radius: 8px;
                 padding: 10px; color: #fff; font-family: monospace; font-size: 13px;
                 overflow-y: auto; z-index: 1000; box-shadow: 0 0 15px rgba(0,210,211,0.25);
+                display: none; /* Hidden by default during clean play! */
             `;
             gameContainer.appendChild(treeDom);
         }
 
         this.renderSceneTreeUI(treeDom);
 
-        // Dragging & Nudge Events
         let isDragging = false;
         let dragOffset = { x: 0, y: 0 };
 
@@ -825,7 +843,6 @@ class PlayStateScene {
 
         window.addEventListener('pointerup', () => { isDragging = false; });
 
-        // Mouse Wheel Scaling
         window.addEventListener('wheel', (e) => {
             if (this.selectedProp) {
                 e.preventDefault();
@@ -841,9 +858,7 @@ class PlayStateScene {
             }
         }, { passive: false });
 
-        // Hotkeys: H, Nudge, Layers, Save
         window.addEventListener('keydown', (e) => {
-            // Press H -> Toggle Tree Panel Visibility!
             if (e.key === 'h' || e.key === 'H') {
                 const panel = document.getElementById('scene-tree-panel');
                 if (panel) {
@@ -888,7 +903,6 @@ class PlayStateScene {
         `;
 
         document.getElementById('save-tree-btn').onclick = () => this.exportStageLayout();
-
         const listCont = document.getElementById('tree-items-list');
 
         for (const [name, propObj] of Object.entries(this.inspectableProps)) {
@@ -898,7 +912,6 @@ class PlayStateScene {
                 padding: 4px 6px; margin-bottom: 4px; border-radius: 4px; background: #191e2b;
             `;
 
-            // Hide / Unhide Eye Button
             const eyeBtn = document.createElement('button');
             eyeBtn.innerText = propObj.visible ? '👁' : '🚫';
             eyeBtn.style.cssText = `background:none; border:none; color:#a4b0be; cursor:pointer; font-size:14px; margin-right:6px;`;
@@ -909,7 +922,6 @@ class PlayStateScene {
                 eyeBtn.style.color = propObj.visible ? '#a4b0be' : '#ff4757';
             };
 
-            // Select Object Button
             const selectBtn = document.createElement('button');
             selectBtn.innerText = name.toUpperCase();
             selectBtn.style.cssText = `
@@ -929,7 +941,6 @@ class PlayStateScene {
         this.selectedProp = prop;
         this.updateInspectorHUD();
 
-        // Highlight selected row in tree
         document.querySelectorAll('#tree-items-list div').forEach(r => r.style.background = '#191e2b');
         const activeRow = document.getElementById(`tree-row-${prop.propName}`);
         if (activeRow) activeRow.style.background = '#2ed57333';
@@ -946,7 +957,7 @@ class PlayStateScene {
         const sx = Math.abs(this.selectedProp.scale.x).toFixed(2);
         const parentIdx = this.selectedProp.parent ? this.selectedProp.parent.getChildIndex(this.selectedProp) : 0;
 
-        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()} | Pos: (${this.selectedProp.x}, ${this.selectedProp.y}) | Scale: ${sx} | Layer: ${parentIdx}\n[Click name in Tree] to select | [👁] to Hide/Unhide | [H] to Toggle Panel | [S] to SAVE`;
+        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()} | Pos: (${this.selectedProp.x}, ${this.selectedProp.y}) | Scale: ${sx} | Layer: ${parentIdx}`;
     }
 
     exportStageLayout() {
@@ -961,14 +972,14 @@ class PlayStateScene {
         }
 
         const jsonString = JSON.stringify(layout, null, 2);
-        console.log("%c=== EXPORTED STAGE LAYOUT (PASTE THIS!) ===", "color: #2ed573; font-size: 16px; font-weight: bold;");
+        console.log("%c=== EXPORTED STAGE LAYOUT ===", "color: #2ed573; font-size: 16px; font-weight: bold;");
         console.log(jsonString);
 
         if (navigator.clipboard) {
             navigator.clipboard.writeText(jsonString).catch(() => {});
         }
 
-        alert("Stage layout exported to F12 Console & copied to clipboard!\nPaste the code block to permanently lock it.");
+        alert("Stage layout exported to F12 Console & copied to clipboard!");
     }
 
     setupStrumlines() {
@@ -1241,7 +1252,6 @@ class PlayStateScene {
 
             const diff = n.time - songPos;
 
-            // Opponent Sings
             if (!n.isPlayer && diff <= 0) {
                 n.hit = true;
                 n.sprite.visible = false;
@@ -1254,7 +1264,6 @@ class PlayStateScene {
                 continue;
             }
 
-            // Player Miss
             if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
@@ -1273,7 +1282,6 @@ class PlayStateScene {
                 continue;
             }
 
-            // Draw Note
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
                 const noteY = receptorY + (diff * scrollMult);
@@ -1569,12 +1577,10 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load Characters
         const dadChar = await loadCharacter(item.player2, false, false);
         const bfChar = await loadCharacter('bf', true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
-        // 2. Load Stage Pieces
         const stageData = {};
         const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette'];
 
@@ -1592,7 +1598,6 @@ async function launchSong(item) {
             }
         }
 
-        // 3. Load Animated Background Crewmates
         const stageProps = {
             tawny: await loadAnimatedProp('tawny'),
             minigrey: await loadAnimatedProp('minigrey'),
