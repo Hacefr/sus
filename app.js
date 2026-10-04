@@ -98,7 +98,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // V-SLICE METADATA
         if (path.endsWith('-metadata.json')) {
             const p = entry.async('string').then(text => {
                 try {
@@ -110,7 +109,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // V-SLICE CHARTS
         if (path.endsWith('-chart.json')) {
             const p = entry.async('string').then(text => {
                 try {
@@ -122,7 +120,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // CODENAME & PSYCH CHARTS
         if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json') && !path.endsWith('-metadata.json') && !path.endsWith('-chart.json')) {
             const p = entry.async('string').then(jsonText => {
                 try {
@@ -173,7 +170,6 @@ async function ingestZip(file) {
 
     await Promise.all(scanPromises);
 
-    // MERGE V-SLICE WITH PLAYDATA CHARACTERS
     for (const [songKey, cObj] of Object.entries(vsliceCharts)) {
         const meta = vsliceMeta[songKey] || {};
         const parsed = cObj.parsed;
@@ -188,11 +184,18 @@ async function ingestZip(file) {
         const songName = meta.songName || meta.name || songKey;
         const bpm = meta.bpm || (meta.timeChanges && meta.timeChanges[0] ? meta.timeChanges[0].bpm : 150);
 
-        // Extract accurate characters from V-Slice playData!
         const playData = meta.playData || {};
         const chars = playData.characters || {};
 
-        const opponent = chars.opponent || meta.opponent || parsed.player2 || 'maroon';
+        // Security DLC character matching
+        let opponent = chars.opponent || meta.opponent || parsed.player2;
+        if (!opponent) {
+            if (songKey.includes('49')) opponent = 'noob49';
+            else if (songKey.includes('trot')) opponent = 'horsemate';
+            else if (songKey.includes('threat')) opponent = 'maroonthreat';
+            else opponent = 'maroon';
+        }
+
         const player = chars.player || meta.player || parsed.player1 || 'bf';
         const stage = playData.stage || meta.stage || parsed.stage || 'security';
 
@@ -294,13 +297,14 @@ const Conductor = {
 };
 
 // ========================================================
-// --- SPARROW ATLAS & ANIMATED CHARACTER ---
+// --- ADOBE ANIMATE TEXTURE ATLAS & SPARROW PARSERS ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
 const ARROW_ANGLES = [-Math.PI / 2, Math.PI, 0, Math.PI / 2];
 const DIR_ANIMS = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
 
+// 1. SPARROW ATLAS PARSER (.XML)
 function parseSparrowAtlas(baseTexture, xmlDoc) {
     const subTextures = xmlDoc.getElementsByTagName("SubTexture");
     const anims = {};
@@ -335,13 +339,95 @@ function parseSparrowAtlas(baseTexture, xmlDoc) {
     return anims;
 }
 
+// 2. ADOBE ANIMATE TEXTURE ATLAS PARSER (Animation.json + spritemap1.json)
+function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
+    const spritemap = {};
+    for (const item of spritemapJson.ATLAS.SPRITES) {
+        const s = item.SPRITE;
+        spritemap[s.name] = new PIXI.Texture(baseTexture, new PIXI.Rectangle(s.x, s.y, s.w, s.h));
+    }
+
+    const symbols = {};
+    if (animJson.SD && animJson.SD.S) {
+        for (const s of animJson.SD.S) {
+            symbols[s.SN] = s;
+        }
+    }
+
+    function renderSymbolToContainer(symName, frameNum, parentMat, container) {
+        const sym = symbols[symName];
+        if (!sym || !sym.TL || !sym.TL.L) return;
+
+        for (const layer of sym.TL.L) {
+            if (!layer.FR) continue;
+            let activeFR = null;
+            for (const fr of layer.FR) {
+                if (frameNum >= fr.I && frameNum < fr.I + fr.DU) {
+                    activeFR = fr;
+                    break;
+                }
+            }
+            if (!activeFR || !activeFR.E) continue;
+
+            for (const el of activeFR.E) {
+                if (el.ASI) {
+                    const tex = spritemap[el.ASI.N];
+                    if (tex) {
+                        const spr = new PIXI.Sprite(tex);
+                        const localMat = el.ASI.MX ? new PIXI.Matrix(...el.ASI.MX) : new PIXI.Matrix();
+                        const finalMat = parentMat.clone().append(localMat);
+                        spr.transform.setFromMatrix(finalMat);
+                        container.addChild(spr);
+                    }
+                } else if (el.SI) {
+                    const subFrame = (frameNum - activeFR.I + (el.SI.FF || 0));
+                    const localMat = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
+                    const finalMat = parentMat.clone().append(localMat);
+                    renderSymbolToContainer(el.SI.SN, subFrame, finalMat, container);
+                }
+            }
+        }
+    }
+
+    const anims = {};
+    const rootLayers = animJson.AN.TL.L;
+
+    for (const layer of rootLayers) {
+        for (const fr of layer.FR) {
+            for (const el of fr.E || []) {
+                if (el.SI && el.SI.SN) {
+                    const animName = el.SI.SN.toLowerCase();
+                    const duration = fr.DU;
+                    const frameTextures = [];
+
+                    for (let f = 0; f < duration; f++) {
+                        const tempCont = new PIXI.Container();
+                        const rootMat = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
+                        
+                        renderSymbolToContainer(el.SI.SN, f, rootMat, tempCont);
+                        
+                        const renderTexture = PIXI.RenderTexture.create({ width: 700, height: 700 });
+                        tempCont.position.set(350, 350); // Center anchor
+                        app.renderer.render(tempCont, { renderTexture });
+                        frameTextures.push(renderTexture);
+                        tempCont.destroy({ children: true });
+                    }
+
+                    anims[animName] = frameTextures;
+                }
+            }
+        }
+    }
+
+    return anims;
+}
+
 class FunkinCharacter {
     constructor(anims, isPlayer = false) {
         this.anims = anims;
         this.isPlayer = isPlayer;
         this.container = new PIXI.Container();
 
-        // Find initial idle or fallback
         const idleKey = Object.keys(anims).find(k => k.toLowerCase().includes('idle')) || Object.keys(anims)[0];
         this.sprite = new PIXI.AnimatedSprite(anims[idleKey] || [PIXI.Texture.EMPTY]);
         this.sprite.animationSpeed = 24 / 60;
@@ -353,12 +439,12 @@ class FunkinCharacter {
         this.currentAnim = 'idle';
         this.holdTimer = 0;
 
+        // FIXED: BF is naturally facing left, do NOT invert scale!
         const scale = 0.85;
-        this.container.scale.set(this.isPlayer ? -scale : scale, scale);
+        this.container.scale.set(scale, scale);
     }
 
     playAnim(animName, forced = false) {
-        // Smart fuzzy search: matches 'singLEFT', 'sing-left', 'left', 'Left Note', etc.
         const cleanTarget = animName.toLowerCase().replace(/[^a-z0-9]/g, '');
         
         let matchedKey = Object.keys(this.anims).find(k => {
@@ -366,7 +452,6 @@ class FunkinCharacter {
             return cleanKey === cleanTarget || cleanKey.includes(cleanTarget);
         });
 
-        // Fallback for idle
         if (!matchedKey && animName === 'idle') {
             matchedKey = Object.keys(this.anims).find(k => k.toLowerCase().includes('idle'));
         }
@@ -377,7 +462,7 @@ class FunkinCharacter {
             this.sprite.loop = animName.toLowerCase().includes('idle');
             this.sprite.gotoAndPlay(0);
 
-            if (animName.toLowerCase().startsWith('sing')) {
+            if (animName.toLowerCase().startsWith('sing') || animName === 'left' || animName === 'right' || animName === 'up' || animName === 'down') {
                 this.holdTimer = 0.35;
             }
         }
@@ -464,7 +549,6 @@ class PlayStateScene {
                 this.stageBack.addChild(spr);
             });
         } else {
-            // Space Starfield Default
             const bg = new PIXI.Graphics();
             bg.beginFill(0x0c0f18);
             bg.drawRect(-400, -200, 2080, 1120);
@@ -647,7 +731,6 @@ class PlayStateScene {
         this.dad.update(deltaSec);
         this.bf.update(deltaSec);
 
-        // Smooth Camera Follow
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -668,18 +751,19 @@ class PlayStateScene {
 
             const diff = n.time - songPos;
 
-            // Opponent Sings
             if (!n.isPlayer && diff <= 0) {
                 n.hit = true;
                 n.sprite.visible = false;
                 if (n.tailSprite) n.tailSprite.visible = false;
                 this.hitReceptor(n.dir, false);
-                this.dad.playAnim(DIR_ANIMS[n.dir], true);
+
+                // Sings left/down/up/right
+                const anims = ['left', 'down', 'up', 'right'];
+                this.dad.playAnim(anims[n.dir], true);
                 this.camTargetX = 460;
                 continue;
             }
 
-            // Player Miss
             if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
@@ -691,7 +775,6 @@ class PlayStateScene {
                 continue;
             }
 
-            // Draw Note
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
                 const noteY = receptorY + (diff * scrollMult);
@@ -727,7 +810,9 @@ class PlayStateScene {
     onKeyPress(dir) {
         const songPos = Conductor.songPosition;
         this.hitReceptor(dir, true);
-        this.bf.playAnim(DIR_ANIMS[dir], true);
+        
+        const anims = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
+        this.bf.playAnim(anims[dir], true);
         this.camTargetX = 820;
 
         let closest = null;
@@ -840,25 +925,62 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// --- ADVANCED CHARACTER RESOLVER ---
+// --- ADVANCED UNIVERSAL CHARACTER LOADER ---
 async function loadCharacter(charName, isPlayer) {
-    const searchNames = [
-        charName.toLowerCase().trim(),
-        charName.toLowerCase().replace(/[^a-z0-9]/g, ''),
-    ];
+    const clean = charName.toLowerCase().trim();
 
-    if (isPlayer) {
-        searchNames.push('bf', 'boyfriend', 'bf-holding-mic', 'bf_holding_mic', 'bf_security', 'bf-security');
+    // 1. Check for Adobe Animate Texture Atlas (Security DLC format)
+    let animJsonEntry = null;
+    let spritemapJsonEntry = null;
+    let spritemapPngEntry = null;
+
+    for (const [path, entry] of Object.entries(VirtualFS.assets)) {
+        if (path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`)) {
+            if (path.endsWith('animation.json')) animJsonEntry = entry;
+            if (path.endsWith('spritemap1.json')) spritemapJsonEntry = entry;
+            if (path.endsWith('spritemap1.png')) spritemapPngEntry = entry;
+        }
     }
 
+    if (animJsonEntry && spritemapJsonEntry && spritemapPngEntry) {
+        try {
+            const animJson = JSON.parse(await animJsonEntry.async('string'));
+            const spritemapJson = JSON.parse(await spritemapJsonEntry.async('string'));
+            const pngBlob = await spritemapPngEntry.async('blob');
+
+            const img = new Image();
+            img.src = URL.createObjectURL(pngBlob);
+            await new Promise(res => img.onload = res);
+
+            const baseTexture = new PIXI.BaseTexture(img);
+            const anims = parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson);
+
+            console.log(`%c[TEXTURE ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
+            return new FunkinCharacter(anims, isPlayer);
+        } catch(err) {
+            console.warn(`Failed loading Texture Atlas for ${charName}:`, err);
+        }
+    }
+
+    // 2. Check for Sparrow XML Sheet (Base Game format)
     let pngEntry = null;
     let xmlEntry = null;
 
-    // Search across all assets in VirtualFS
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        for (const name of searchNames) {
-            if (path.includes(`/${name}.png`) || path.endsWith(`${name}.png`)) pngEntry = entry;
-            if (path.includes(`/${name}.xml`) || path.endsWith(`${name}.xml`)) xmlEntry = entry;
+        // STRICT: Only look in characters folders, banish dialogue/cutscene portraits!
+        if (path.includes('/characters/') && !path.includes('/dialogue/') && !path.includes('/cutscene/') && !path.includes('/icons/')) {
+            if (path.endsWith(`${clean}.png`)) pngEntry = entry;
+            if (path.endsWith(`${clean}.xml`)) xmlEntry = entry;
+        }
+    }
+
+    // BF Fallback search
+    if (isPlayer && (!pngEntry || !xmlEntry)) {
+        for (const [path, entry] of Object.entries(VirtualFS.assets)) {
+            if (path.includes('/characters/') && !path.includes('/dialogue/')) {
+                if (path.endsWith('boyfriend.png') || path.endsWith('bf.png')) pngEntry = entry;
+                if (path.endsWith('boyfriend.xml') || path.endsWith('bf.xml')) xmlEntry = entry;
+            }
         }
     }
 
@@ -877,7 +999,7 @@ async function loadCharacter(charName, isPlayer) {
             const baseTexture = new PIXI.BaseTexture(img);
             const anims = parseSparrowAtlas(baseTexture, xmlDoc);
 
-            console.log(`%c[CHARACTER LOADED] ${charName.toUpperCase()}`, "color: #2ed573; font-weight: bold;");
+            console.log(`%c[SPARROW SHEET LOADED] ${charName.toUpperCase()}`, "color: #2ed573; font-weight: bold;");
             return new FunkinCharacter(anims, isPlayer);
         } catch(e) {
             console.warn(`Failed parsing Sparrow sheet for ${charName}:`, e);
@@ -933,17 +1055,17 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // Load Opponent and Boyfriend with accurate V-Slice names!
+        // Load Opponent and Boyfriend
         const dadChar = await loadCharacter(item.player2, false);
         const bfChar = await loadCharacter(item.player1, true);
 
-        // Load ALL stage background sprites (not just one!)
+        // Load Stage Room Sprites
         const stageSprites = [];
         const stageClean = (item.stage || 'security').toLowerCase().replace(/[^a-z0-9]/g, '');
 
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
             const cleanPath = path.replace(/[^a-z0-9\/\.]/g, '');
-            if (cleanPath.includes(`stages/${stageClean}`) || cleanPath.includes(`images/${stageClean}`)) {
+            if ((cleanPath.includes(`stages/${stageClean}`) || cleanPath.includes(`images/${stageClean}`)) && !cleanPath.includes('character')) {
                 if (cleanPath.endsWith('.png') || cleanPath.endsWith('.jpg')) {
                     const blob = await entry.async('blob');
                     const img = new Image();
