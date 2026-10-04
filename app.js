@@ -2,7 +2,7 @@
 const app = new PIXI.Application({
     width: 1280,
     height: 720,
-    backgroundColor: 0x0c0d14,
+    backgroundColor: 0x07080c,
     antialias: true,
     powerPreference: "high-performance"
 });
@@ -74,12 +74,12 @@ startBtn.addEventListener('click', async () => {
     refreshFreeplayUI();
 });
 
-// --- 4. UNIVERSAL SCANNER (V-Slice, Codename & Psych) ---
+// --- 4. UNIVERSAL SCANNER ---
 async function ingestZip(file) {
     statusBox.innerText = `Scanning: ${file.name}...`;
     const zip = await JSZip.loadAsync(file);
 
-    statusBox.innerText = `Indexing charts & assets...`;
+    statusBox.innerText = `Indexing charts & visual assets...`;
     const scanPromises = [];
     const vsliceMeta = {};
     const vsliceCharts = {};
@@ -90,7 +90,6 @@ async function ingestZip(file) {
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
         VirtualFS.assets[path] = entry;
 
-        // Catch Shaders (.frag)
         if (path.endsWith('.frag')) {
             const p = entry.async('string').then(shaderCode => {
                 const shaderName = path.split('/').pop().replace('.frag', '');
@@ -99,7 +98,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // --- A. V-SLICE FORMAT: <song>-metadata.json ---
         if (path.endsWith('-metadata.json')) {
             const p = entry.async('string').then(text => {
                 try {
@@ -111,7 +109,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // --- B. V-SLICE FORMAT: <song>-chart.json ---
         if (path.endsWith('-chart.json')) {
             const p = entry.async('string').then(text => {
                 try {
@@ -123,7 +120,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // --- C. CODENAME & PSYCH FORMATS ---
         if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json') && !path.endsWith('-metadata.json') && !path.endsWith('-chart.json')) {
             const p = entry.async('string').then(jsonText => {
                 try {
@@ -158,6 +154,9 @@ async function ingestZip(file) {
                                 name: String(rawName),
                                 bpm: songData.bpm || parsed.bpm || 150,
                                 speed: parseFloat(cleanSpeed) || 2.5,
+                                stage: songData.stage || parsed.stage || 'polus',
+                                player1: songData.player1 || parsed.player1 || 'bf',
+                                player2: songData.player2 || parsed.player2 || 'red',
                                 chartData: parsed,
                                 chartPath: path
                             };
@@ -171,7 +170,6 @@ async function ingestZip(file) {
 
     await Promise.all(scanPromises);
 
-    // Merge V-Slice Charts into VirtualFS
     for (const [songKey, cObj] of Object.entries(vsliceCharts)) {
         const meta = vsliceMeta[songKey] || {};
         const parsed = cObj.parsed;
@@ -191,11 +189,12 @@ async function ingestZip(file) {
             name: String(songName),
             bpm: bpm,
             speed: parseFloat(cleanSpeed) || 2.5,
+            stage: meta.stage || parsed.stage || 'security',
+            player1: meta.playAs || parsed.player1 || 'bf',
+            player2: meta.opponent || parsed.player2 || 'maroon',
             chartData: parsed,
             chartPath: cObj.path
         };
-
-        console.log(`%c[V-SLICE CHART LOADED] ${songName.toUpperCase()} -> ${cObj.path}`, "color: #00d2d3; font-weight: bold;");
     }
 }
 
@@ -220,8 +219,8 @@ function refreshFreeplayUI() {
         card.innerHTML = `
             <h3>${String(item.name).toUpperCase()}</h3>
             <div class="song-meta">
+                <span>Opponent: <strong>${item.player2}</strong></span>
                 <span>BPM: <strong>${item.bpm}</strong></span>
-                <span>Speed: <strong>${item.speed}</strong></span>
             </div>
         `;
 
@@ -231,7 +230,7 @@ function refreshFreeplayUI() {
 }
 
 // ========================================================
-// --- CONDUCTOR, STRUMBAR & GAMEPLAY ---
+// --- CONDUCTOR & TIMING ---
 // ========================================================
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -242,7 +241,6 @@ const Conductor = {
     stepCrochet: 150,
     songPosition: 0,
     lastBeat: -1,
-    lastStep: -1,
     curBeat: 0,
     curStep: 0,
     isPlaying: false,
@@ -259,7 +257,6 @@ const Conductor = {
         this.startTime = audioCtx.currentTime;
         this.songPosition = 0;
         this.lastBeat = -1;
-        this.lastStep = -1;
         this.isPlaying = true;
     },
 
@@ -277,10 +274,6 @@ const Conductor = {
         this.curStep = Math.floor(this.songPosition / this.stepCrochet);
         this.curBeat = Math.floor(this.curStep / 4);
 
-        if (this.curStep > this.lastStep) {
-            this.lastStep = this.curStep;
-        }
-
         if (this.curBeat > this.lastBeat) {
             this.lastBeat = this.curBeat;
             onBeatHit(this.curBeat);
@@ -288,46 +281,218 @@ const Conductor = {
     }
 };
 
+// ========================================================
+// --- MILESTONE 4: SPARROW ATLAS & ANIMATED CHARACTER ---
+// ========================================================
+
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
 const ARROW_ANGLES = [-Math.PI / 2, Math.PI, 0, Math.PI / 2];
+const DIR_ANIMS = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
 
-function drawArrowShape(graphics, color, size = 32) {
-    graphics.clear();
-    graphics.beginFill(color);
-    graphics.moveTo(0, -size);
-    graphics.lineTo(size * 0.8, size * 0.7);
-    graphics.lineTo(0, size * 0.4);
-    graphics.lineTo(-size * 0.8, size * 0.7);
-    graphics.closePath();
-    graphics.endFill();
+function parseSparrowAtlas(baseTexture, xmlDoc) {
+    const subTextures = xmlDoc.getElementsByTagName("SubTexture");
+    const anims = {};
+
+    for (let i = 0; i < subTextures.length; i++) {
+        const sub = subTextures[i];
+        const rawName = sub.getAttribute("name");
+        if (!rawName) continue;
+
+        const match = rawName.match(/^(.*?)([0-9]{4})$/);
+        const animName = match ? match[1] : rawName;
+
+        const x = parseInt(sub.getAttribute("x") || 0);
+        const y = parseInt(sub.getAttribute("y") || 0);
+        const width = parseInt(sub.getAttribute("width") || 0);
+        const height = parseInt(sub.getAttribute("height") || 0);
+
+        const frameX = parseInt(sub.getAttribute("frameX") || 0);
+        const frameY = parseInt(sub.getAttribute("frameY") || 0);
+        const frameWidth = parseInt(sub.getAttribute("frameWidth") || width);
+        const frameHeight = parseInt(sub.getAttribute("frameHeight") || height);
+
+        const rect = new PIXI.Rectangle(x, y, width, height);
+        const orig = new PIXI.Rectangle(0, 0, frameWidth, frameHeight);
+        const trim = new PIXI.Rectangle(-frameX, -frameY, width, height);
+
+        const texture = new PIXI.Texture(baseTexture, rect, orig, trim);
+
+        if (!anims[animName]) anims[animName] = [];
+        anims[animName].push(texture);
+    }
+    return anims;
 }
+
+class FunkinCharacter {
+    constructor(anims, isPlayer = false) {
+        this.anims = anims;
+        this.isPlayer = isPlayer;
+        this.container = new PIXI.Container();
+
+        this.sprite = new PIXI.AnimatedSprite(anims['idle'] || Object.values(anims)[0] || [PIXI.Texture.EMPTY]);
+        this.sprite.animationSpeed = 24 / 60;
+        this.sprite.play();
+        this.sprite.anchor.set(0.5, 1.0); // Foot anchor
+
+        this.container.addChild(this.sprite);
+
+        this.currentAnim = 'idle';
+        this.holdTimer = 0;
+
+        // Scale character to standard FNF proportions
+        const scale = 0.85;
+        this.container.scale.set(this.isPlayer ? -scale : scale, scale);
+    }
+
+    playAnim(animName, forced = false) {
+        // Find best match (handles cases like 'singLEFT0', 'singLEFT', etc.)
+        let matchedKey = Object.keys(this.anims).find(k => k.toLowerCase() === animName.toLowerCase());
+        
+        if (!matchedKey) {
+            matchedKey = Object.keys(this.anims).find(k => k.toLowerCase().startsWith(animName.toLowerCase()));
+        }
+
+        if (matchedKey && this.anims[matchedKey]) {
+            this.currentAnim = animName;
+            this.sprite.textures = this.anims[matchedKey];
+            this.sprite.loop = (animName === 'idle' || animName === 'danceLeft');
+            this.sprite.gotoAndPlay(0);
+
+            if (animName.startsWith('sing')) {
+                this.holdTimer = 0.35; // Hold sing pose for 0.35 seconds
+            }
+        }
+    }
+
+    update(deltaSec) {
+        if (this.holdTimer > 0) {
+            this.holdTimer -= deltaSec;
+            if (this.holdTimer <= 0) {
+                this.playAnim('idle');
+            }
+        }
+    }
+}
+
+// Fallback placeholder crewmate if character files are missing
+function createFallbackCharacter(colorHex, isPlayer) {
+    const cont = new PIXI.Container();
+    const g = new PIXI.Graphics();
+    
+    // Backpack
+    g.beginFill(colorHex, 0.8);
+    g.drawRoundedRect(isPlayer ? 35 : -95, -180, 60, 110, 16);
+    g.endFill();
+
+    // Body
+    g.beginFill(colorHex);
+    g.drawRoundedRect(-60, -220, 120, 220, 45);
+    g.endFill();
+
+    // Visor
+    g.beginFill(0x80dfff);
+    g.drawRoundedRect(isPlayer ? -75 : 5, -170, 70, 45, 18);
+    g.endFill();
+
+    cont.addChild(g);
+    return {
+        container: cont,
+        playAnim: (anim) => {
+            cont.scale.set(1.08);
+            setTimeout(() => cont.scale.set(1.0), 100);
+        },
+        update: () => {}
+    };
+}
+
+// ========================================================
+// --- STAGE & GAMEPLAY SCENE ---
+// ========================================================
 
 let playState = null;
 
 class PlayStateScene {
-    constructor(songItem) {
+    constructor(songItem, dadChar, bfChar, stageTexture) {
         this.songItem = songItem;
         this.speed = songItem.speed || 2.5;
-        this.container = new PIXI.Container();
+
+        // Root Layers
+        this.worldContainer = new PIXI.Container(); // Moves with Camera
+        this.hudContainer = new PIXI.Container();   // Fixed UI (Strumline, Score)
+
+        this.dad = dadChar;
+        this.bf = bfChar;
 
         this.notes = [];
         this.receptors = [];
         this.score = 0;
         this.combo = 0;
-        this.ratingText = null;
-        this.scoreText = null;
 
+        this.camTargetX = 640;
+        this.camZoom = 0.9;
+        this.baseZoom = 0.9;
+
+        this.setupStage(stageTexture);
+        this.setupCharacters();
         this.setupStrumlines();
         this.parseChartNotes(songItem.chartData);
         this.setupHUD();
 
-        app.stage.addChild(this.container);
+        app.stage.addChild(this.worldContainer);
+        app.stage.addChild(this.hudContainer);
+    }
+
+    setupStage(stageTex) {
+        this.stageBack = new PIXI.Container();
+
+        if (stageTex) {
+            const bgSprite = new PIXI.Sprite(stageTex);
+            bgSprite.anchor.set(0.5);
+            bgSprite.position.set(640, 360);
+            bgSprite.scale.set(1.1);
+            this.stageBack.addChild(bgSprite);
+        } else {
+            // Space Starfield Backdrop
+            const bg = new PIXI.Graphics();
+            bg.beginFill(0x0c0f18);
+            bg.drawRect(-400, -200, 2080, 1120);
+            bg.endFill();
+
+            // Stars
+            for (let i = 0; i < 70; i++) {
+                bg.beginFill(0xffffff, Math.random() * 0.8 + 0.2);
+                bg.drawCircle(Math.random() * 1920 - 320, Math.random() * 1080 - 180, Math.random() * 2.5 + 1);
+                bg.endFill();
+            }
+
+            // Polus / Ship Metallic Floor
+            bg.beginFill(0x191e2b);
+            bg.drawRect(-400, 520, 2080, 600);
+            bg.endFill();
+            bg.lineStyle(4, 0x00d2d3, 0.4);
+            bg.moveTo(-400, 520);
+            bg.lineTo(1680, 520);
+
+            this.stageBack.addChild(bg);
+        }
+
+        this.worldContainer.addChild(this.stageBack);
+    }
+
+    setupCharacters() {
+        // Place Opponent on Left Stage
+        this.dad.container.position.set(380, 590);
+        this.worldContainer.addChild(this.dad.container);
+
+        // Place Boyfriend on Right Stage
+        this.bf.container.position.set(900, 590);
+        this.worldContainer.addChild(this.bf.container);
     }
 
     setupStrumlines() {
         const startX_Opponent = 120;
         const startX_Player = 760;
-        const receptorY = 100;
+        const receptorY = 90;
         const spacing = 110;
 
         for (let i = 0; i < 8; i++) {
@@ -339,7 +504,7 @@ class PlayStateScene {
             receptor.position.set(x, receptorY);
 
             const base = new PIXI.Graphics();
-            base.lineStyle(4, 0x444d63, 1);
+            base.lineStyle(4, 0x3d4457, 1);
             base.drawCircle(0, 0, 42);
             receptor.addChild(base);
 
@@ -349,11 +514,10 @@ class PlayStateScene {
             receptor.addChild(arrow);
 
             this.receptors.push({ container: receptor, dir, isPlayer, arrow, base });
-            this.container.addChild(receptor);
+            this.hudContainer.addChild(receptor);
         }
     }
 
-    // --- UNIVERSAL NOTE PARSER (V-Slice, Codename & Psych) ---
     parseChartNotes(chart) {
         this.notes = [];
         if (!chart) return;
@@ -361,7 +525,7 @@ class PlayStateScene {
         const data = chart.chartData || chart;
         const songObj = (data.song && typeof data.song === 'object') ? data.song : data;
 
-        // --- 1. V-SLICE FORMAT ({ notes: { normal: [ { t, d, l }, ... ] } }) ---
+        // V-SLICE
         if (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) {
             const diffNotes = data.notes.normal || data.notes.hard || data.notes.default || Object.values(data.notes)[0];
             if (Array.isArray(diffNotes)) {
@@ -378,7 +542,7 @@ class PlayStateScene {
             }
         }
 
-        // --- 2. CODENAME ENGINE STRUM LINES ---
+        // CODENAME
         const strumLines = data.strumLines || (data.song && data.song.strumLines);
         if (this.notes.length === 0 && Array.isArray(strumLines)) {
             strumLines.forEach((strum, lineIndex) => {
@@ -397,7 +561,7 @@ class PlayStateScene {
             });
         }
 
-        // --- 3. PSYCH / NMV2 / SECTION NOTES ---
+        // PSYCH / NMV2
         if (this.notes.length === 0) {
             let sections = songObj.notes || data.notes || [];
             if (sections && typeof sections === 'object' && !Array.isArray(sections)) {
@@ -406,9 +570,7 @@ class PlayStateScene {
 
             if (Array.isArray(sections)) {
                 sections.forEach(section => {
-                    if (!section) return;
-
-                    if (Array.isArray(section.sectionNotes)) {
+                    if (section && Array.isArray(section.sectionNotes)) {
                         section.sectionNotes.forEach(n => {
                             if (!Array.isArray(n) || n.length < 2) return;
                             const rawDir = n[1];
@@ -427,27 +589,23 @@ class PlayStateScene {
             }
         }
 
-        // Sort chronologically
         this.notes.sort((a, b) => a.time - b.time);
 
-        // Build sprites
         this.notes.forEach(n => {
             const spr = new PIXI.Graphics();
             drawArrowShape(spr, NOTE_COLORS[n.dir], 32);
             spr.rotation = ARROW_ANGLES[n.dir];
             spr.visible = false;
-            this.container.addChild(spr);
+            this.hudContainer.addChild(spr);
             n.sprite = spr;
 
             if (n.sustain > 50) {
                 const tail = new PIXI.Graphics();
                 tail.visible = false;
-                this.container.addChildAt(tail, 0);
+                this.hudContainer.addChildAt(tail, 0);
                 n.tailSprite = tail;
             }
         });
-
-        console.log(`[GAMEPLAY] Parsed ${this.notes.length} notes for this song!`);
     }
 
     setupHUD() {
@@ -459,7 +617,7 @@ class PlayStateScene {
         });
         this.scoreText.anchor.set(0.5);
         this.scoreText.position.set(1280 / 2, 670);
-        this.container.addChild(this.scoreText);
+        this.hudContainer.addChild(this.scoreText);
 
         this.ratingText = new PIXI.Text('', {
             fontFamily: 'Segoe UI, sans-serif',
@@ -470,35 +628,54 @@ class PlayStateScene {
         });
         this.ratingText.anchor.set(0.5);
         this.ratingText.position.set(1280 / 2, 350);
-        this.container.addChild(this.ratingText);
+        this.hudContainer.addChild(this.ratingText);
     }
 
-    update() {
+    update(deltaSec) {
         const songPos = Conductor.songPosition;
-        const receptorY = 100;
+        const receptorY = 90;
         const scrollMult = 0.32 * this.speed;
 
+        this.dad.update(deltaSec);
+        this.bf.update(deltaSec);
+
+        // --- CAMERA CONTROLLER ---
+        // Smoothly pan camera to whoever is singing
+        const currentCamX = this.worldContainer.position.x;
+        const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
+        this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
+
+        // Smoothly lerp camera zoom back to base
+        this.camZoom += (this.baseZoom - this.camZoom) * 0.08;
+        this.worldContainer.scale.set(this.camZoom);
+        this.worldContainer.pivot.set(640, 360);
+        this.worldContainer.position.set(640, 360);
+
+        // Receptors bounce
         this.receptors.forEach(r => {
             r.container.scale.x += (1.0 - r.container.scale.x) * 0.2;
             r.container.scale.y += (1.0 - r.container.scale.y) * 0.2;
         });
 
+        // Notes update
         for (let i = 0; i < this.notes.length; i++) {
             const n = this.notes[i];
             if (n.hit || n.missed) continue;
 
             const diff = n.time - songPos;
 
-            // Opponent Auto-play
+            // Opponent Sings
             if (!n.isPlayer && diff <= 0) {
                 n.hit = true;
                 n.sprite.visible = false;
                 if (n.tailSprite) n.tailSprite.visible = false;
                 this.hitReceptor(n.dir, false);
+                this.dad.playAnim(DIR_ANIMS[n.dir], true);
+                this.camTargetX = 460; // Pan to Dad
                 continue;
             }
 
-            // Player Note Miss
+            // Player Miss
             if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
@@ -510,7 +687,7 @@ class PlayStateScene {
                 continue;
             }
 
-            // Render Notes in Viewport
+            // Draw Note
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
                 const noteY = receptorY + (diff * scrollMult);
@@ -546,6 +723,8 @@ class PlayStateScene {
     onKeyPress(dir) {
         const songPos = Conductor.songPosition;
         this.hitReceptor(dir, true);
+        this.bf.playAnim(DIR_ANIMS[dir], true);
+        this.camTargetX = 820; // Pan to Boyfriend
 
         let closest = null;
         let minDiff = Infinity;
@@ -593,24 +772,46 @@ class PlayStateScene {
     }
 
     destroy() {
-        app.stage.removeChild(this.container);
-        this.container.destroy({ children: true });
+        app.stage.removeChild(this.worldContainer);
+        app.stage.removeChild(this.hudContainer);
+        this.worldContainer.destroy({ children: true });
+        this.hudContainer.destroy({ children: true });
     }
 }
 
+function drawArrowShape(graphics, color, size = 32) {
+    graphics.clear();
+    graphics.beginFill(color);
+    graphics.moveTo(0, -size);
+    graphics.lineTo(size * 0.8, size * 0.7);
+    graphics.lineTo(0, size * 0.4);
+    graphics.lineTo(-size * 0.8, size * 0.7);
+    graphics.closePath();
+    graphics.endFill();
+}
+
+// Beat Bumping (Bounces characters and camera zoom)
 function onBeatHit(beat) {
     if (playState) {
+        playState.camZoom = playState.baseZoom + 0.035; // Beat Zoom!
+
+        // Dance to Idle on beat if not currently holding a singing note
+        if (playState.dad.holdTimer <= 0) playState.dad.playAnim('idle');
+        if (playState.bf.holdTimer <= 0) playState.bf.playAnim('idle');
+
         playState.receptors.forEach(r => {
-            r.container.scale.set(1.08);
+            r.container.scale.set(1.06);
         });
     }
 }
 
+// --- TICKER LOOP ---
 app.ticker.add((delta) => {
+    const deltaSec = delta / 60;
     Conductor.update();
 
     if (playState && Conductor.isPlaying) {
-        playState.update();
+        playState.update(deltaSec);
         if (playState.ratingText && playState.ratingText.scale.x > 1.0) {
             playState.ratingText.scale.x -= delta * 0.05;
             playState.ratingText.scale.y -= delta * 0.05;
@@ -618,6 +819,7 @@ app.ticker.add((delta) => {
     }
 });
 
+// --- INPUTS ---
 const KEY_MAP = {
     'KeyD': 0, 'ArrowLeft': 0,
     'KeyF': 1, 'ArrowDown': 1,
@@ -638,7 +840,46 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// --- AUDIO RESOLVER & LAUNCHER ---
+// --- CHARACTER & ASSET RESOLVER ---
+async function loadCharacter(charName, isPlayer) {
+    const clean = charName.toLowerCase().trim();
+
+    // 1. Locate PNG and XML in VirtualFS
+    let pngEntry = null;
+    let xmlEntry = null;
+
+    for (const [path, entry] of Object.entries(VirtualFS.assets)) {
+        if (path.includes(`/${clean}.png`) || path.endsWith(`${clean}.png`)) pngEntry = entry;
+        if (path.includes(`/${clean}.xml`) || path.endsWith(`${clean}.xml`)) xmlEntry = entry;
+    }
+
+    if (pngEntry && xmlEntry) {
+        try {
+            const pngBlob = await pngEntry.async('blob');
+            const xmlText = await xmlEntry.async('string');
+
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+
+            const img = new Image();
+            img.src = URL.createObjectURL(pngBlob);
+            await new Promise(res => img.onload = res);
+
+            const baseTexture = new PIXI.BaseTexture(img);
+            const anims = parseSparrowAtlas(baseTexture, xmlDoc);
+
+            console.log(`%c[CHARACTER LOADED] ${charName.toUpperCase()}`, "color: #2ed573; font-weight: bold;");
+            return new FunkinCharacter(anims, isPlayer);
+        } catch(e) {
+            console.warn(`Failed parsing Sparrow sheet for ${charName}, using fallback:`, e);
+        }
+    }
+
+    // Fallback if spritesheet isn't found
+    return createFallbackCharacter(isPlayer ? 0x00d2d3 : 0xff334b, isPlayer);
+}
+
+// --- LAUNCH SONG ---
 async function launchSong(item) {
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
@@ -654,7 +895,6 @@ async function launchSong(item) {
 
     const audioToLoad = [];
 
-    // Finds matching audio regardless of folder structure
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
         const cleanPath = path.replace(/[^a-z0-9\/\.]/g, '');
         if (cleanPath.includes(`/${cleanId}/`) || cleanPath.includes(`songs/${cleanId}`) || cleanPath.includes(`/${cleanId}-inst`) || cleanPath.includes(`/${cleanId}-voices`)) {
@@ -674,6 +914,7 @@ async function launchSong(item) {
     Conductor.setBPM(item.bpm);
 
     try {
+        // Load Audio Stems
         for (const audioFile of audioToLoad) {
             const buffer = await audioFile.entry.async('arraybuffer');
             const decoded = await audioCtx.decodeAudioData(buffer.slice(0));
@@ -685,14 +926,33 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        playState = new PlayStateScene(item);
+        // Load Opponent and Boyfriend Sparrow Spritesheets!
+        const dadChar = await loadCharacter(item.player2 || 'red', false);
+        const bfChar = await loadCharacter(item.player1 || 'bf', true);
+
+        // Load Stage Texture if found
+        let stageTex = null;
+        const stageClean = (item.stage || 'polus').toLowerCase();
+        for (const [path, entry] of Object.entries(VirtualFS.assets)) {
+            if (path.includes(`/${stageClean}`) && (path.endsWith('.png') || path.endsWith('.jpg'))) {
+                const blob = await entry.async('blob');
+                const img = new Image();
+                img.src = URL.createObjectURL(blob);
+                await new Promise(res => img.onload = res);
+                stageTex = PIXI.Texture.from(img);
+                break;
+            }
+        }
+
+        // Start Gameplay Scene with Characters & Stage!
+        playState = new PlayStateScene(item, dadChar, bfChar, stageTex);
 
         const playTime = audioCtx.currentTime + 0.1;
         Conductor.activeSources.forEach(s => s.start(playTime));
         Conductor.start();
 
     } catch(err) {
-        console.error("Audio playback error:", err);
+        console.error("Launch error:", err);
         alert("Failed to start song. Check console (F12).");
         returnToFreeplay();
     }
