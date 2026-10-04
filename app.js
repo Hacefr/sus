@@ -187,7 +187,6 @@ async function ingestZip(file) {
         const playData = meta.playData || {};
         const chars = playData.characters || {};
 
-        // Security DLC character matching
         let opponent = chars.opponent || meta.opponent || parsed.player2;
         if (!opponent) {
             if (songKey.includes('49')) opponent = 'noob49';
@@ -297,14 +296,12 @@ const Conductor = {
 };
 
 // ========================================================
-// --- ADOBE ANIMATE TEXTURE ATLAS & SPARROW PARSERS ---
+// --- FLXANIMATE / ADOBE ANIMATE PARSER ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
 const ARROW_ANGLES = [-Math.PI / 2, Math.PI, 0, Math.PI / 2];
-const DIR_ANIMS = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
 
-// 1. SPARROW ATLAS PARSER (.XML)
 function parseSparrowAtlas(baseTexture, xmlDoc) {
     const subTextures = xmlDoc.getElementsByTagName("SubTexture");
     const anims = {};
@@ -339,7 +336,7 @@ function parseSparrowAtlas(baseTexture, xmlDoc) {
     return anims;
 }
 
-// 2. ADOBE ANIMATE TEXTURE ATLAS PARSER (Animation.json + spritemap1.json)
+// 2. BULLETPROOF ADOBE ANIMATE TEXTURE ATLAS ENGINE
 function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
     const spritemap = {};
     for (const item of spritemapJson.ATLAS.SPRITES) {
@@ -354,12 +351,15 @@ function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
         }
     }
 
-    function renderSymbolToContainer(symName, frameNum, parentMat, container) {
+    function renderSymbol(symName, frameNum, parentMat, container) {
         const sym = symbols[symName];
         if (!sym || !sym.TL || !sym.TL.L) return;
 
-        for (const layer of sym.TL.L) {
-            if (!layer.FR) continue;
+        // FIXED: Iterate backwards so Back Layers draw first and Front Layers draw on top!
+        for (let l = sym.TL.L.length - 1; l >= 0; l--) {
+            const layer = sym.TL.L[l];
+            if (!layer.FR || layer.FR.length === 0) continue;
+
             let activeFR = null;
             for (const fr of layer.FR) {
                 if (frameNum >= fr.I && frameNum < fr.I + fr.DU) {
@@ -367,6 +367,12 @@ function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
                     break;
                 }
             }
+
+            // Fallback to last frame if past duration
+            if (!activeFR) {
+                activeFR = layer.FR[layer.FR.length - 1];
+            }
+
             if (!activeFR || !activeFR.E) continue;
 
             for (const el of activeFR.E) {
@@ -380,42 +386,51 @@ function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
                         container.addChild(spr);
                     }
                 } else if (el.SI) {
-                    const subFrame = (frameNum - activeFR.I + (el.SI.FF || 0));
+                    // FIXED: If symbol is "SF" (Single Frame), freeze on First Frame (el.SI.FF) forever!
+                    let subFrame = 0;
+                    if (el.SI.LP === "SF") {
+                        subFrame = el.SI.FF || 0;
+                    } else {
+                        subFrame = (frameNum - activeFR.I + (el.SI.FF || 0));
+                    }
+
                     const localMat = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
                     const finalMat = parentMat.clone().append(localMat);
-                    renderSymbolToContainer(el.SI.SN, subFrame, finalMat, container);
+                    renderSymbol(el.SI.SN, subFrame, finalMat, container);
                 }
             }
         }
     }
 
     const anims = {};
-    const rootLayers = animJson.AN.TL.L;
 
-    for (const layer of rootLayers) {
-        for (const fr of layer.FR) {
-            for (const el of fr.E || []) {
-                if (el.SI && el.SI.SN) {
-                    const animName = el.SI.SN.toLowerCase();
-                    const duration = fr.DU;
-                    const frameTextures = [];
+    // Render symbols directly from Symbol Dictionary (SD.S)
+    const animSymbols = ['idle', 'left', 'down', 'up', 'right', 'hey', 'singleft', 'singdown', 'singup', 'singright'];
 
-                    for (let f = 0; f < duration; f++) {
-                        const tempCont = new PIXI.Container();
-                        const rootMat = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
-                        
-                        renderSymbolToContainer(el.SI.SN, f, rootMat, tempCont);
-                        
-                        const renderTexture = PIXI.RenderTexture.create({ width: 700, height: 700 });
-                        tempCont.position.set(350, 350); // Center anchor
-                        app.renderer.render(tempCont, { renderTexture });
-                        frameTextures.push(renderTexture);
-                        tempCont.destroy({ children: true });
-                    }
-
-                    anims[animName] = frameTextures;
+    for (const [name, sym] of Object.entries(symbols)) {
+        const lower = name.toLowerCase();
+        if (animSymbols.some(a => lower === a || lower.startsWith(a))) {
+            let maxFrames = 1;
+            for (const layer of sym.TL.L || []) {
+                for (const fr of layer.FR || []) {
+                    maxFrames = Math.max(maxFrames, fr.I + fr.DU);
                 }
             }
+
+            const frameTextures = [];
+            for (let f = 0; f < maxFrames; f++) {
+                const tempCont = new PIXI.Container();
+                // Origin centered to prevent clipping
+                renderSymbol(name, f, new PIXI.Matrix(), tempCont);
+
+                const renderTexture = PIXI.RenderTexture.create({ width: 900, height: 900 });
+                tempCont.position.set(450, 650); // Floor anchor
+                app.renderer.render(tempCont, { renderTexture });
+                frameTextures.push(renderTexture);
+                tempCont.destroy({ children: true });
+            }
+
+            anims[lower] = frameTextures;
         }
     }
 
@@ -439,9 +454,9 @@ class FunkinCharacter {
         this.currentAnim = 'idle';
         this.holdTimer = 0;
 
-        // FIXED: BF is naturally facing left, do NOT invert scale!
         const scale = 0.85;
-        this.container.scale.set(scale, scale);
+        // FIXED: Opponent flipped to face right towards BF; BF stays facing left!
+        this.container.scale.set(this.isPlayer ? scale : -scale, scale);
     }
 
     playAnim(animName, forced = false) {
@@ -757,7 +772,6 @@ class PlayStateScene {
                 if (n.tailSprite) n.tailSprite.visible = false;
                 this.hitReceptor(n.dir, false);
 
-                // Sings left/down/up/right
                 const anims = ['left', 'down', 'up', 'right'];
                 this.dad.playAnim(anims[n.dir], true);
                 this.camTargetX = 460;
@@ -925,11 +939,11 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// --- ADVANCED UNIVERSAL CHARACTER LOADER ---
+// --- ADVANCED CHARACTER LOADER ---
 async function loadCharacter(charName, isPlayer) {
     const clean = charName.toLowerCase().trim();
 
-    // 1. Check for Adobe Animate Texture Atlas (Security DLC format)
+    // 1. Texture Atlas Check
     let animJsonEntry = null;
     let spritemapJsonEntry = null;
     let spritemapPngEntry = null;
@@ -962,19 +976,17 @@ async function loadCharacter(charName, isPlayer) {
         }
     }
 
-    // 2. Check for Sparrow XML Sheet (Base Game format)
+    // 2. Sparrow Sheet Check
     let pngEntry = null;
     let xmlEntry = null;
 
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        // STRICT: Only look in characters folders, banish dialogue/cutscene portraits!
-        if (path.includes('/characters/') && !path.includes('/dialogue/') && !path.includes('/cutscene/') && !path.includes('/icons/')) {
+        if (path.includes('/characters/') && !path.includes('/dialogue/') && !path.includes('/cutscene/')) {
             if (path.endsWith(`${clean}.png`)) pngEntry = entry;
             if (path.endsWith(`${clean}.xml`)) xmlEntry = entry;
         }
     }
 
-    // BF Fallback search
     if (isPlayer && (!pngEntry || !xmlEntry)) {
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
             if (path.includes('/characters/') && !path.includes('/dialogue/')) {
@@ -1055,11 +1067,9 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // Load Opponent and Boyfriend
         const dadChar = await loadCharacter(item.player2, false);
         const bfChar = await loadCharacter(item.player1, true);
 
-        // Load Stage Room Sprites
         const stageSprites = [];
         const stageClean = (item.stage || 'security').toLowerCase().replace(/[^a-z0-9]/g, '');
 
