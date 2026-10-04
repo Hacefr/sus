@@ -17,7 +17,7 @@ const VirtualFS = {
     shaders: {}      
 };
 
-// PERMANENT STAGE REGISTRY (YOUR EXPORTED COORDINATES BAKED IN!)
+// PRESET FOR SECURITY STAGE (Used by both "49" and "Suspect"!)
 const STAGE_PRESETS = {
     security: {
         wall:     { x: 640, y: 409, scale: 0.54, layer: 0 },
@@ -210,10 +210,16 @@ async function ingestZip(file) {
             if (songKey.includes('49')) opponent = 'noob49';
             else if (songKey.includes('trot')) opponent = 'horsemate';
             else if (songKey.includes('threat')) opponent = 'maroonthreat';
-            else opponent = 'noob49';
+            else if (songKey.includes('suspect')) opponent = 'detective';
+            else opponent = 'purple';
         }
 
-        const player = chars.player || meta.player || parsed.player1 || 'bf';
+        // Support playing as Pico in Suspect!
+        let player = chars.player || meta.player || parsed.player1;
+        if (!player) {
+            player = songKey.includes('suspect') ? 'pico' : 'bf';
+        }
+
         const stage = playData.stage || meta.stage || parsed.stage || 'security';
 
         VirtualFS.charts[songKey] = {
@@ -252,7 +258,7 @@ function refreshFreeplayUI() {
             <h3>${String(item.name).toUpperCase()}</h3>
             <div class="song-meta">
                 <span>Opponent: <strong>${item.player2}</strong></span>
-                <span>BPM: <strong>${item.bpm}</strong></span>
+                <span>Player: <strong>${item.player1}</strong></span>
             </div>
         `;
 
@@ -444,7 +450,6 @@ class DynamicAtlasCharacter {
         this.holdTimer = 0;
         this.fps = 24;
 
-        // Custom baked scale if defined
         const scale = isGF ? 0.62 : 0.65;
         this.container.scale.set(this.isPlayer ? scale : (this.isGF ? scale : -scale), scale);
 
@@ -775,7 +780,7 @@ class PlayStateScene {
             this.makeInspectable('gf', this.gf.container);
         }
 
-        // Dad / Noob49
+        // Dad / Opponent
         this.dad.container.position.set(preset.dad.x, preset.dad.y);
         this.worldContainer.addChild(this.dad.container);
         this.makeInspectable('dad', this.dad.container);
@@ -792,7 +797,7 @@ class PlayStateScene {
             this.makeInspectable('minigrey', this.minigreySprite);
         }
 
-        // BF on Carpet
+        // BF / Player (Pico or BF)
         this.bf.container.position.set(preset.bf.x, preset.bf.y);
         this.worldContainer.addChild(this.bf.container);
         this.makeInspectable('bf', this.bf.container);
@@ -800,17 +805,18 @@ class PlayStateScene {
         this.worldContainer.addChild(this.stageFront);
     }
 
+    // --- SCENE TREE PANEL WITH FLIP FEATURE ---
     initSceneTreePanel() {
         let treeDom = document.getElementById('scene-tree-panel');
         if (!treeDom) {
             treeDom = document.createElement('div');
             treeDom.id = 'scene-tree-panel';
             treeDom.style.cssText = `
-                position: absolute; right: 15px; top: 15px; width: 220px; max-height: 480px;
-                background: rgba(15, 18, 26, 0.92); border: 1px solid #00d2d3; border-radius: 8px;
+                position: absolute; right: 15px; top: 15px; width: 230px; max-height: 480px;
+                background: rgba(15, 18, 26, 0.94); border: 1px solid #00d2d3; border-radius: 8px;
                 padding: 10px; color: #fff; font-family: monospace; font-size: 13px;
                 overflow-y: auto; z-index: 1000; box-shadow: 0 0 15px rgba(0,210,211,0.25);
-                display: none; /* Hidden by default during clean play! */
+                display: none;
             `;
             gameContainer.appendChild(treeDom);
         }
@@ -868,6 +874,12 @@ class PlayStateScene {
 
             if (!this.selectedProp) return;
 
+            // F Key -> FLIP HORIZONTALLY!
+            if (e.key === 'f' || e.key === 'F') {
+                this.selectedProp.scale.x *= -1;
+                this.updateInspectorHUD();
+            }
+
             const step = e.shiftKey ? 10 : 1;
             if (e.key === 'ArrowLeft') { this.selectedProp.x -= step; this.updateInspectorHUD(); }
             if (e.key === 'ArrowRight') { this.selectedProp.x += step; this.updateInspectorHUD(); }
@@ -912,9 +924,10 @@ class PlayStateScene {
                 padding: 4px 6px; margin-bottom: 4px; border-radius: 4px; background: #191e2b;
             `;
 
+            // Hide / Unhide Button
             const eyeBtn = document.createElement('button');
             eyeBtn.innerText = propObj.visible ? '👁' : '🚫';
-            eyeBtn.style.cssText = `background:none; border:none; color:#a4b0be; cursor:pointer; font-size:14px; margin-right:6px;`;
+            eyeBtn.style.cssText = `background:none; border:none; color:#a4b0be; cursor:pointer; font-size:14px; margin-right:4px;`;
             eyeBtn.onclick = (e) => {
                 e.stopPropagation();
                 propObj.visible = !propObj.visible;
@@ -922,6 +935,18 @@ class PlayStateScene {
                 eyeBtn.style.color = propObj.visible ? '#a4b0be' : '#ff4757';
             };
 
+            // FLIP BUTTON (⇄)
+            const flipBtn = document.createElement('button');
+            flipBtn.innerText = '⇄';
+            flipBtn.title = 'Flip (F)';
+            flipBtn.style.cssText = `background:none; border:none; color:#00d2d3; cursor:pointer; font-size:14px; margin-right:6px; font-weight:bold;`;
+            flipBtn.onclick = (e) => {
+                e.stopPropagation();
+                propObj.scale.x *= -1;
+                this.updateInspectorHUD();
+            };
+
+            // Select Button
             const selectBtn = document.createElement('button');
             selectBtn.innerText = name.toUpperCase();
             selectBtn.style.cssText = `
@@ -931,6 +956,7 @@ class PlayStateScene {
             selectBtn.onclick = () => this.selectInspectableProp(propObj);
 
             row.appendChild(eyeBtn);
+            row.appendChild(flipBtn);
             row.appendChild(selectBtn);
             row.id = `tree-row-${name}`;
             listCont.appendChild(row);
@@ -955,9 +981,10 @@ class PlayStateScene {
         this.selectionBox.drawRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
         const sx = Math.abs(this.selectedProp.scale.x).toFixed(2);
+        const isFlipped = this.selectedProp.scale.x < 0;
         const parentIdx = this.selectedProp.parent ? this.selectedProp.parent.getChildIndex(this.selectedProp) : 0;
 
-        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()} | Pos: (${this.selectedProp.x}, ${this.selectedProp.y}) | Scale: ${sx} | Layer: ${parentIdx}`;
+        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()} | Pos: (${this.selectedProp.x}, ${this.selectedProp.y}) | Scale: ${sx} | Flipped: ${isFlipped} | Layer: ${parentIdx}\n[F] to Flip | [⇄] Flip Button | [H] Scene Tree | [S] to SAVE`;
     }
 
     exportStageLayout() {
@@ -967,6 +994,7 @@ class PlayStateScene {
                 x: obj.x,
                 y: obj.y,
                 scale: parseFloat(Math.abs(obj.scale.x).toFixed(2)),
+                flipX: obj.scale.x < 0,
                 layer: obj.parent ? obj.parent.getChildIndex(obj) : 0
             };
         }
@@ -1149,7 +1177,7 @@ class PlayStateScene {
         this.ratingText.position.set(1280 / 2, 350);
         this.hudContainer.addChild(this.ratingText);
 
-        this.inspectorText = new PIXI.Text('[PRESS H]: Toggle Scene Tree | [S] to SAVE', {
+        this.inspectorText = new PIXI.Text('[PRESS H]: Toggle Scene Tree | [F] to Flip | [S] to SAVE', {
             fontFamily: 'Courier New, monospace',
             fontSize: 14,
             fontWeight: 'bold',
@@ -1252,6 +1280,7 @@ class PlayStateScene {
 
             const diff = n.time - songPos;
 
+            // Opponent Sings
             if (!n.isPlayer && diff <= 0) {
                 n.hit = true;
                 n.sprite.visible = false;
@@ -1264,6 +1293,7 @@ class PlayStateScene {
                 continue;
             }
 
+            // Player Miss
             if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
@@ -1282,6 +1312,7 @@ class PlayStateScene {
                 continue;
             }
 
+            // Draw Note
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
                 const noteY = receptorY + (diff * scrollMult);
@@ -1466,7 +1497,12 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
         if (isGF) {
             isMatch = path.includes('characters/cosmicube/gf') || path.includes('characters/gf') || path.includes('/gf/');
         } else if (isPlayer) {
-            isMatch = path.includes('characters/cosmicube/bf') || path.includes('characters/bf') || path.includes('/bf/');
+            // Supports both BF and PICO as players!
+            if (clean.includes('pico')) {
+                isMatch = path.includes('characters/cosmicube/pico') || path.includes('characters/pico') || path.includes('/pico/');
+            } else {
+                isMatch = path.includes('characters/cosmicube/bf') || path.includes('characters/bf') || path.includes('/bf/');
+            }
         } else {
             isMatch = path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`);
         }
@@ -1577,10 +1613,12 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
+        // 1. Load All 3 Main Characters (Player can be BF or Pico!)
         const dadChar = await loadCharacter(item.player2, false, false);
-        const bfChar = await loadCharacter('bf', true, false);
+        const bfChar = await loadCharacter(item.player1, true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
+        // 2. Load Stage Background Images
         const stageData = {};
         const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette'];
 
@@ -1598,6 +1636,7 @@ async function launchSong(item) {
             }
         }
 
+        // 3. Load Animated Background Crewmates
         const stageProps = {
             tawny: await loadAnimatedProp('tawny'),
             minigrey: await loadAnimatedProp('minigrey'),
