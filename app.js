@@ -10,10 +10,8 @@ const app = new PIXI.Application({
 document.getElementById('game-container').appendChild(app.view);
 
 // --- 2. ADDITIVE VIRTUAL FILE SYSTEM ---
-// Holds charts, audio, textures, and XMLs in memory
 const VirtualFS = {
     charts: {},      // songName -> chart JSON
-    audioEntries: {}, // relativePath -> JSZip Entry or Blob
     assets: {},      // relativePath -> JSZip Entry
     shaders: {}      // name -> GLSL code string
 };
@@ -24,7 +22,7 @@ const freeplayScreen = document.getElementById('freeplay-screen');
 const songGrid = document.getElementById('song-grid');
 const modCounter = document.getElementById('mod-counter');
 
-// --- 3. DRAG AND DROP HANDLER (Supports Multiple Zips) ---
+// --- 3. DRAG AND DROP HANDLER ---
 window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', async (e) => {
     e.preventDefault();
@@ -36,54 +34,74 @@ window.addEventListener('drop', async (e) => {
         if (file.name.endsWith('.zip')) {
             await ingestZip(file);
         } else if (file.name.endsWith('.imp')) {
-            statusBox.innerText = `Loading fast package: ${file.name}...`;
-            // .imp handler will plug in here in Milestone 5
+            statusBox.innerText = `Loading .imp package: ${file.name}...`;
         }
     }
 
     refreshFreeplayUI();
 });
 
-// --- 4. MOD INGESTION & LAZY REGISTRY ---
+// --- 4. SMART DEEP SCANNER ---
 async function ingestZip(file) {
-    statusBox.innerText = `Reading: ${file.name}...`;
+    statusBox.innerText = `Scanning: ${file.name}...`;
     const zip = await JSZip.loadAsync(file);
 
-    statusBox.innerText = `Indexing songs & assets from: ${file.name}...`;
-
+    statusBox.innerText = `Parsing charts & assets from: ${file.name}...`;
     const chartPromises = [];
 
-    zip.forEach((path, entry) => {
+    zip.forEach((rawPath, entry) => {
         if (entry.dir) return;
-        const cleanPath = path.toLowerCase().replace(/\\/g, '/');
 
-        // Store asset reference without decompressing yet (saves RAM)
-        VirtualFS.assets[cleanPath] = entry;
+        // Normalize path: lowercase and forward slashes
+        const path = rawPath.toLowerCase().replace(/\\/g, '/');
 
-        // Chart discovery: looks inside data/
-        if (cleanPath.startsWith('data/') && cleanPath.endsWith('.json')) {
-            // Avoid event JSON files, we only want song charts
-            if (!cleanPath.includes('events') && !cleanPath.includes('-hard') && !cleanPath.includes('-easy')) {
+        // Store reference in VirtualFS by its clean relative filename
+        VirtualFS.assets[path] = entry;
+
+        // SMART CHART DETECTOR:
+        // Finds anything like ".../data/songname/songname.json" or ".../data/songname/songname-hard.json"
+        // regardless of parent folders (assets/, mods/, SecurityDLC/, etc.)
+        const chartMatch = path.match(/(?:^|\/)data\/([^\/]+)\/([^\/]+)\.json$/);
+
+        if (chartMatch) {
+            const folderName = chartMatch[1];
+            const fileName = chartMatch[2];
+
+            // Ignore event-only files
+            if (fileName !== 'events' && fileName !== 'picospeaker') {
                 const p = entry.async('string').then(jsonText => {
                     try {
                         const parsed = JSON.parse(jsonText);
-                        if (parsed && parsed.song) {
-                            const songName = parsed.song.song.toLowerCase();
-                            VirtualFS.charts[songName] = parsed.song;
+                        
+                        // Handle standard Psych Engine / FNF chart format
+                        let songData = parsed.song ? parsed.song : parsed;
+
+                        // Verify it's actually a chart with notes/bpm
+                        if (songData && (songData.notes || songData.bpm)) {
+                            const songName = (typeof songData.song === 'string') 
+                                ? songData.song.toLowerCase().trim() 
+                                : folderName.toLowerCase().trim();
+
+                            // Prefer normal chart, fallback to -hard if normal doesn't exist
+                            if (!VirtualFS.charts[songName] || !fileName.includes('-easy')) {
+                                VirtualFS.charts[songName] = songData;
+                                console.log(`[CHART FOUND] ${songData.song || folderName} (${path})`);
+                            }
                         }
                     } catch(err) {
-                        // Skip non-chart JSONs
+                        console.warn("Skipping invalid JSON:", path);
                     }
                 });
                 chartPromises.push(p);
             }
         }
 
-        // Cache shaders if present
-        if (cleanPath.endsWith('.frag')) {
+        // Cache shaders (.frag files)
+        if (path.endsWith('.frag')) {
             const p = entry.async('string').then(shaderCode => {
-                const shaderName = cleanPath.split('/').pop().replace('.frag', '');
+                const shaderName = path.split('/').pop().replace('.frag', '');
                 VirtualFS.shaders[shaderName] = shaderCode;
+                console.log(`[SHADER FOUND] ${shaderName}`);
             });
             chartPromises.push(p);
         }
@@ -95,8 +113,9 @@ async function ingestZip(file) {
 // --- 5. BUILD THE FREEPLAY MENU ---
 function refreshFreeplayUI() {
     const songKeys = Object.keys(VirtualFS.charts);
+    
     if (songKeys.length === 0) {
-        statusBox.innerText = "No charts found. Did you drop the full mod zip?";
+        statusBox.innerText = "No charts detected! Open DevTools (F12) to see indexed files.";
         return;
     }
 
@@ -106,17 +125,19 @@ function refreshFreeplayUI() {
     songGrid.innerHTML = '';
     modCounter.innerText = `${songKeys.length} Songs Loaded`;
 
-    // Alphabetical sort
+    // Sort alphabetically
     songKeys.sort().forEach(key => {
         const chart = VirtualFS.charts[key];
+        const displayName = chart.song || key;
+        
         const card = document.createElement('div');
         card.className = 'song-card';
         card.innerHTML = `
-            <h3>${chart.song}</h3>
+            <h3>${displayName.toUpperCase()}</h3>
             <div class="song-meta">
                 <span>Opponent: <strong>${chart.player2 || 'Unknown'}</strong></span>
-                <span>BPM: <strong>${chart.bpm}</strong></span>
-                <span>Speed: <strong>${chart.speed}</strong></span>
+                <span>BPM: <strong>${chart.bpm || 100}</strong></span>
+                <span>Speed: <strong>${chart.speed || 1}</strong></span>
             </div>
         `;
 
@@ -130,8 +151,8 @@ function selectSong(chart) {
     console.log("=== SONG SELECTED ===", chart.song);
     console.log("Stage:", chart.stage || "default");
     console.log("Player 1 (BF):", chart.player1);
-    console.log("Player 2 (Dad):", chart.player2);
-    console.log("Note Count in Chart:", chart.notes ? chart.notes.length : 0);
-
-    alert(`Ready for Milestone 2!\nSelected: ${chart.song}\nBPM: ${chart.bpm}\nOpponent: ${chart.player2}`);
+    console.log("Player 2 (Opponent):", chart.player2);
+    console.log("BPM:", chart.bpm);
+    
+    alert(`Ready for Milestone 2!\nLoaded: ${chart.song}\nBPM: ${chart.bpm}\nOpponent: ${chart.player2}\nStage: ${chart.stage || 'default'}`);
 }
