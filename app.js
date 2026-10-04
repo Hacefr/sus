@@ -296,7 +296,7 @@ const Conductor = {
 };
 
 // ========================================================
-// --- ULTRA-LIGHTWEIGHT DYNAMIC TEXTURE ATLAS CHARACTER ---
+// --- DYNAMIC TEXTURE ATLAS CHARACTER (0 EXTRA VRAM) ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
@@ -309,14 +309,12 @@ class DynamicAtlasCharacter {
         this.displayContainer = new PIXI.Container();
         this.container.addChild(this.displayContainer);
 
-        // Map Spritemap Cuts directly from spritemap1.png (0 extra VRAM!)
         this.spritemap = {};
         for (const item of spritemapJson.ATLAS.SPRITES) {
             const s = item.SPRITE;
             this.spritemap[s.name] = new PIXI.Texture(baseTexture, new PIXI.Rectangle(s.x, s.y, s.w, s.h));
         }
 
-        // Symbol dictionary
         this.symbols = {};
         if (animJson.SD && animJson.SD.S) {
             for (const s of animJson.SD.S) {
@@ -324,7 +322,6 @@ class DynamicAtlasCharacter {
             }
         }
 
-        // Map animation names
         this.animMap = {};
         for (const symName of Object.keys(this.symbols)) {
             const lower = symName.toLowerCase();
@@ -342,8 +339,8 @@ class DynamicAtlasCharacter {
         this.holdTimer = 0;
         this.fps = 24;
 
-        // Proportions: Opponent faces right; BF faces left
-        const scale = 0.58;
+        // Perfect scale: Noob49 is 0.65; BF is 0.65
+        const scale = 0.65;
         this.container.scale.set(this.isPlayer ? scale : -scale, scale);
 
         this.renderCurrentFrame();
@@ -379,7 +376,6 @@ class DynamicAtlasCharacter {
             const currentSym = self.symbols[name];
             if (!currentSym || !currentSym.TL || !currentSym.TL.L) return;
 
-            // Back to Front Layer Stacking
             for (let l = currentSym.TL.L.length - 1; l >= 0; l--) {
                 const layer = currentSym.TL.L[l];
                 if (!layer.FR || layer.FR.length === 0) continue;
@@ -408,7 +404,7 @@ class DynamicAtlasCharacter {
                     } else if (el.SI) {
                         let subFrame = 0;
                         if (el.SI.LP === "SF") {
-                            subFrame = el.SI.FF || 0; // Frozen on First Frame!
+                            subFrame = el.SI.FF || 0;
                         } else {
                             subFrame = (frameNum - activeFR.I + (el.SI.FF || 0));
                         }
@@ -421,9 +417,8 @@ class DynamicAtlasCharacter {
             }
         }
 
-        // Draw active symbol with center anchor
         const rootMat = new PIXI.Matrix();
-        rootMat.translate(-200, -320); // Local floor alignment
+        rootMat.translate(-200, -320);
         renderSymbol(symName, this.frame, rootMat, this.displayContainer);
     }
 
@@ -509,10 +504,10 @@ class PlayStateScene {
         this.score = 0;
         this.combo = 0;
 
-        // Exact security.hxc camera
-        this.camTargetX = 675;
-        this.camZoom = 0.95;
-        this.baseZoom = 0.95;
+        // Cinematic close-up zoom matching official game!
+        this.camTargetX = 640;
+        this.camZoom = 1.05;
+        this.baseZoom = 1.05;
 
         this.setupStage(stageData);
         this.setupCharacters();
@@ -529,39 +524,39 @@ class PlayStateScene {
         this.stageFront = new PIXI.Container();
 
         if (stageData && stageData.wall) {
-            // 1. Room Background Wall & Floor
+            // 1. Background Wall & Floor Tiles
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(640, 360);
-            wall.scale.set(1.15);
+            wall.scale.set(1.2);
             this.stageBack.addChild(wall);
 
-            // 2. Security Cabinets with Traffic Cone
+            // 2. Cabinets placed on the FAR RIGHT background!
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
                 cabs.anchor.set(0.5, 1.0);
-                cabs.position.set(1120, 680);
-                cabs.scale.set(1.0);
+                cabs.position.set(1180, 560);
+                cabs.scale.set(0.9);
                 this.stageBack.addChild(cabs);
             }
 
-            // 3. Security Desk / Table (Foreground)
+            // 3. Security Desk / Table placed in the BACKGROUND on the left!
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5, 1.0);
-                desk.position.set(640, 710);
-                desk.scale.set(1.05);
-                this.stageFront.addChild(desk);
+                desk.position.set(400, 560); // Sits behind Noob49!
+                desk.scale.set(0.92);
+                this.stageBack.addChild(desk);
             }
 
-            // 4. Overhead Spotlight Beam
+            // 4. Overhead Spotlight Beam (Overlay)
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
-                light.position.set(640, -50);
-                light.scale.set(1.2);
+                light.position.set(640, -40);
+                light.scale.set(1.25);
                 light.blendMode = PIXI.BLEND_MODES.ADD;
-                light.alpha = 0.55;
+                light.alpha = 0.5;
                 this.stageFront.addChild(light);
             }
         } else {
@@ -586,11 +581,12 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        // Feet anchored cleanly on the floor!
-        this.dad.container.position.set(380, 520);
+        // Noob49 stands in the FOREGROUND on the left floor!
+        this.dad.container.position.set(280, 640);
         this.worldContainer.addChild(this.dad.container);
 
-        this.bf.container.position.set(900, 520);
+        // Boyfriend stands on the carpet on the right floor!
+        this.bf.container.position.set(950, 640);
         this.worldContainer.addChild(this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
@@ -746,7 +742,6 @@ class PlayStateScene {
         this.dad.update(deltaSec);
         this.bf.update(deltaSec);
 
-        // Camera Smooth Panning
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -776,7 +771,7 @@ class PlayStateScene {
 
                 const anims = ['left', 'down', 'up', 'right'];
                 this.dad.playAnim(anims[n.dir], true);
-                this.camTargetX = 500;
+                this.camTargetX = 460;
                 continue;
             }
 
@@ -831,7 +826,7 @@ class PlayStateScene {
         
         const anims = ['left', 'down', 'up', 'right'];
         this.bf.playAnim(anims[dir], true);
-        this.camTargetX = 850;
+        this.camTargetX = 820;
 
         let closest = null;
         let minDiff = Infinity;
@@ -947,7 +942,6 @@ window.addEventListener('keydown', (e) => {
 async function loadCharacter(charName, isPlayer) {
     const clean = charName.toLowerCase().trim();
 
-    // Check for Adobe Animate Texture Atlas
     let animJsonEntry = null;
     let spritemapJsonEntry = null;
     let spritemapPngEntry = null;
@@ -977,7 +971,6 @@ async function loadCharacter(charName, isPlayer) {
             const baseTexture = new PIXI.BaseTexture(img);
             console.log(`%c[DYNAMIC ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
             
-            // ZERO RenderTextures! Pure real-time lightweight sprites!
             return new DynamicAtlasCharacter(baseTexture, animJson, spritemapJson, isPlayer);
         } catch(err) {
             console.warn(`Failed loading Texture Atlas for ${charName}:`, err);
@@ -987,7 +980,7 @@ async function loadCharacter(charName, isPlayer) {
     return createFallbackCharacter(isPlayer ? 0x00d2d3 : 0xff334b, isPlayer);
 }
 
-// --- LAUNCH SONG WITH 1.5s BUFFER ---
+// --- LAUNCH SONG ---
 async function launchSong(item) {
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
@@ -1033,11 +1026,11 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load Both Characters (Zero GPU overhead!)
+        // 1. Load Both Characters
         const dadChar = await loadCharacter(item.player2, false);
         const bfChar = await loadCharacter('bf', true);
 
-        // 2. Load the Security Office Stage
+        // 2. Load the Security Office Stage with Correct Room Layout
         const stageData = {};
         const stageAssets = ['wall', 'cabinets', 'table', 'light'];
 
@@ -1055,10 +1048,8 @@ async function launchSong(item) {
             }
         }
 
-        // 3. Initialize Scene FIRST so stage and characters are visible!
         playState = new PlayStateScene(item, dadChar, bfChar, stageData);
 
-        // 4. 1.5-Second Breathing Room before audio and notes start!
         setTimeout(() => {
             if (playState) {
                 playState.showRating("GO!", 0x2ed573);
