@@ -565,6 +565,11 @@ class PlayStateScene {
         this.receptors = [];
         this.score = 0;
         this.combo = 0;
+        this.misses = 0;
+        this.totalNotesHit = 0;
+        this.totalNotesPossible = 0;
+        this.health = 1.0; // Health ranges from 0.0 to 2.0 (1.0 = 50%)
+
         this.gfDanceLeft = false;
 
         this.camTargetX = 640;
@@ -586,11 +591,10 @@ class PlayStateScene {
         this.stageFront = new PIXI.Container();
 
         if (stageData && stageData.wall) {
-            // PROPORTION CALCULATOR: Fits 1080p artwork to 720p canvas
             const rawWidth = stageData.wall.width || 1920;
             const stageScale = 1280 / rawWidth;
 
-            // 1. Wall, Floor & Carpet
+            // 1. Room Background Wall & Floor
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(640, 360);
@@ -615,7 +619,7 @@ class PlayStateScene {
                 this.stageBack.addChild(cabs);
             }
 
-            // 4. Security Desk with Laptop & Flower Pot (Snaps right onto desk shadow!)
+            // 4. Security Desk with Laptop & Flower Pot (Behind Noob49 & GF)
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5);
@@ -665,9 +669,9 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        // 1. Centerpiece: Girlfriend on Speakers (Sitting between desk and carpet!)
+        // 1. Centerpiece: Girlfriend on Speakers (Dead center between desk and carpet!)
         if (this.gf) {
-            this.gf.container.position.set(620, 560);
+            this.gf.container.position.set(670, 610); // Perfectly centered on carpet line!
             this.worldContainer.addChild(this.gf.container);
         }
 
@@ -676,7 +680,7 @@ class PlayStateScene {
         this.worldContainer.addChild(this.dad.container);
 
         // 3. Boyfriend on the Front Right Carpet!
-        this.bf.container.position.set(980, 640);
+        this.bf.container.position.set(990, 640);
         this.worldContainer.addChild(this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
@@ -685,7 +689,7 @@ class PlayStateScene {
     setupStrumlines() {
         const startX_Opponent = 120;
         const startX_Player = 760;
-        const receptorY = 90;
+        const receptorY = 85;
         const spacing = 110;
 
         for (let i = 0; i < 8; i++) {
@@ -801,17 +805,51 @@ class PlayStateScene {
         });
     }
 
+    // --- HEALTH BAR & ICON CREATOR ---
     setupHUD() {
-        this.scoreText = new PIXI.Text('Score: 0 | Combo: 0', {
+        // 1. Health Bar Container (Bottom Center)
+        this.healthBarCont = new PIXI.Container();
+        this.healthBarCont.position.set(640, 645);
+
+        const barWidth = 600;
+        const barHeight = 16;
+
+        this.barWidth = barWidth;
+        this.barHeight = barHeight;
+
+        // Black Border Frame
+        this.barBorder = new PIXI.Graphics();
+        this.barBorder.beginFill(0x000000);
+        this.barBorder.drawRect(-barWidth / 2 - 4, -barHeight / 2 - 4, barWidth + 8, barHeight + 8);
+        this.barBorder.endFill();
+        this.healthBarCont.addChild(this.barBorder);
+
+        // Dynamic Health Fill Graphic
+        this.barFill = new PIXI.Graphics();
+        this.healthBarCont.addChild(this.barFill);
+
+        // 2. Character Icons (Noob49 on Left, BF on Right)
+        this.dadIcon = this.createCharacterIcon(0x50586e, false); // Grey Impostor
+        this.bfIcon = this.createCharacterIcon(0x31b0d5, true);   // Boyfriend Cyan
+
+        this.healthBarCont.addChild(this.dadIcon);
+        this.healthBarCont.addChild(this.bfIcon);
+
+        this.hudContainer.addChild(this.healthBarCont);
+
+        // 3. Score & Accuracy Text
+        this.scoreText = new PIXI.Text('Score: 0 | Misses: 0 | Accuracy: ?', {
             fontFamily: 'Segoe UI, sans-serif',
-            fontSize: 22,
+            fontSize: 16,
+            fontWeight: 'bold',
             fill: 0xffffff,
             align: 'center'
         });
         this.scoreText.anchor.set(0.5);
-        this.scoreText.position.set(1280 / 2, 670);
+        this.scoreText.position.set(640, 678);
         this.hudContainer.addChild(this.scoreText);
 
+        // 4. Hit Rating Text
         this.ratingText = new PIXI.Text('READY!', {
             fontFamily: 'Segoe UI, sans-serif',
             fontSize: 48,
@@ -822,17 +860,88 @@ class PlayStateScene {
         this.ratingText.anchor.set(0.5);
         this.ratingText.position.set(1280 / 2, 350);
         this.hudContainer.addChild(this.ratingText);
+
+        this.updateHealthBar();
+    }
+
+    createCharacterIcon(colorHex, isBF) {
+        const cont = new PIXI.Container();
+        const g = new PIXI.Graphics();
+
+        if (isBF) {
+            // Boyfriend Iconic Head (Blue Hair, Red Cap, Skin)
+            g.beginFill(0x31b0d5); // Blue Hair
+            g.drawCircle(0, 0, 26);
+            g.endFill();
+
+            g.beginFill(0xe55039); // Red Cap
+            g.drawRoundedRect(-14, -26, 38, 24, 8);
+            g.endFill();
+
+            g.beginFill(0xf6b93b); // Face Skin
+            g.drawRoundedRect(-12, -4, 28, 22, 6);
+            g.endFill();
+        } else {
+            // Noob49 Iconic Head (Grey bean with Antenna Bomb!)
+            g.beginFill(colorHex);
+            g.drawRoundedRect(-22, -22, 44, 44, 16);
+            g.endFill();
+
+            g.beginFill(0x80dfff); // Visor
+            g.drawRoundedRect(-6, -14, 28, 18, 8);
+            g.endFill();
+
+            g.beginFill(0x2f3542); // Bomb Antenna
+            g.drawRect(-4, -34, 8, 12);
+            g.drawCircle(0, -38, 6);
+            g.endFill();
+        }
+
+        cont.addChild(g);
+        cont.baseScale = 1.0;
+        return cont;
+    }
+
+    updateHealthBar() {
+        const bw = this.barWidth;
+        const bh = this.barHeight;
+        const pct = Math.max(0, Math.min(2.0, this.health)) / 2.0;
+
+        this.barFill.clear();
+
+        // Left Fill (Opponent Grey)
+        this.barFill.beginFill(0x50586e);
+        this.barFill.drawRect(-bw / 2, -bh / 2, bw, bh);
+        this.barFill.endFill();
+
+        // Right Fill (Boyfriend Cyan)
+        const bfWidth = bw * pct;
+        this.barFill.beginFill(0x31b0d5);
+        this.barFill.drawRect(bw / 2 - bfWidth, -bh / 2, bfWidth, bh);
+        this.barFill.endFill();
+
+        // Place Icons at the exact health divider point
+        const splitX = (bw / 2 - bfWidth);
+        this.dadIcon.position.set(splitX - 35, 0);
+        this.bfIcon.position.set(splitX + 35, 0);
     }
 
     update(deltaSec) {
         const songPos = Conductor.songPosition;
-        const receptorY = 90;
+        const receptorY = 85;
         const scrollMult = 0.32 * this.speed;
 
         this.dad.update(deltaSec);
         this.bf.update(deltaSec);
         if (this.gf) this.gf.update(deltaSec);
 
+        // Smooth Icon beat shrinking
+        this.dadIcon.scale.x += (1.0 - this.dadIcon.scale.x) * 0.15;
+        this.dadIcon.scale.y += (1.0 - this.dadIcon.scale.y) * 0.15;
+        this.bfIcon.scale.x += (1.0 - this.bfIcon.scale.x) * 0.15;
+        this.bfIcon.scale.y += (1.0 - this.bfIcon.scale.y) * 0.15;
+
+        // Camera Smooth Panning
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -872,9 +981,13 @@ class PlayStateScene {
                 n.sprite.visible = false;
                 if (n.tailSprite) n.tailSprite.visible = false;
                 this.combo = 0;
+                this.misses++;
+                this.health = Math.max(0.0, this.health - 0.09); // Drain Health
                 this.score = Math.max(0, this.score - 100);
+
                 this.showRating("MISS", 0xff334b);
                 this.updateScore();
+                this.updateHealthBar();
 
                 const missAnims = ['singleftmiss', 'singdownmiss', 'singupmiss', 'singrightmiss'];
                 this.bf.playAnim(missAnims[n.dir] || 'singleftmiss', true);
@@ -941,6 +1054,9 @@ class PlayStateScene {
             closest.sprite.visible = false;
             if (closest.tailSprite) closest.tailSprite.visible = false;
             this.combo++;
+            this.totalNotesHit++;
+            this.totalNotesPossible++;
+            this.health = Math.min(2.0, this.health + 0.045); // Gain Health!
 
             if (minDiff <= 45) {
                 this.score += 350;
@@ -954,6 +1070,7 @@ class PlayStateScene {
             }
 
             this.updateScore();
+            this.updateHealthBar();
         }
     }
 
@@ -964,7 +1081,8 @@ class PlayStateScene {
     }
 
     updateScore() {
-        this.scoreText.text = `Score: ${this.score} | Combo: ${this.combo}`;
+        const acc = this.totalNotesPossible > 0 ? ((this.totalNotesHit / this.totalNotesPossible) * 100).toFixed(1) : '100';
+        this.scoreText.text = `Score: ${this.score} | Misses: ${this.misses} | Accuracy: ${acc}%`;
     }
 
     destroy() {
@@ -989,6 +1107,10 @@ function drawArrowShape(graphics, color, size = 32) {
 function onBeatHit(beat) {
     if (playState) {
         playState.camZoom = playState.baseZoom + 0.035;
+
+        // Bouncing Character Icons on the Health Bar!
+        if (playState.dadIcon) playState.dadIcon.scale.set(1.25);
+        if (playState.bfIcon) playState.bfIcon.scale.set(1.25);
 
         // Girlfriend dances left and right alternating beats!
         if (playState.gf) {
@@ -1066,7 +1188,6 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
 
     if (animJsonEntry && spritemapJsonEntry && spritemapPngEntry) {
         try {
-            // FIXED: Strips UTF-8 BOM (\uFEFF) so JSON.parse never crashes!
             const animText = (await animJsonEntry.async('string')).replace(/^\uFEFF/, '').trim();
             const spritemapText = (await spritemapJsonEntry.async('string')).replace(/^\uFEFF/, '').trim();
 
