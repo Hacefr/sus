@@ -156,7 +156,7 @@ function refreshFreeplayUI() {
 }
 
 // ========================================================
-// --- MILESTONE 2 & 3: CONDUCTOR, STRUMBAR & GAMEPLAY ---
+// --- CONDUCTOR, STRUMBAR & GAMEPLAY ---
 // ========================================================
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -215,7 +215,7 @@ const Conductor = {
 
 // --- ARROW RECEPTOR GRAPHICS & COLORS ---
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; // Left (Purple), Down (Cyan), Up (Green), Right (Red)
-const ARROW_ANGLES = [-Math.PI / 2, 0, Math.PI, Math.PI / 2];   // Rotations for 4 directions
+const ARROW_ANGLES = [-Math.PI / 2, 0, Math.PI, Math.PI / 2];
 
 function drawArrowShape(graphics, color, size = 32) {
     graphics.clear();
@@ -257,7 +257,6 @@ class PlayStateScene {
         const receptorY = 100;
         const spacing = 110;
 
-        // Create 8 receptors (4 Opponent, 4 Player)
         for (let i = 0; i < 8; i++) {
             const isPlayer = i >= 4;
             const dir = i % 4;
@@ -266,19 +265,16 @@ class PlayStateScene {
             const receptor = new PIXI.Container();
             receptor.position.set(x, receptorY);
 
-            // Base outline
             const base = new PIXI.Graphics();
             base.lineStyle(4, 0x444d63, 1);
             base.drawCircle(0, 0, 42);
             receptor.addChild(base);
 
-            // Arrow interior
             const arrow = new PIXI.Graphics();
             drawArrowShape(arrow, 0x8a95aa, 28);
             arrow.rotation = ARROW_ANGLES[dir];
             receptor.addChild(arrow);
 
-            receptor.baseScale = 1.0;
             this.receptors.push({ container: receptor, dir, isPlayer, arrow, base });
             this.container.addChild(receptor);
         }
@@ -287,7 +283,7 @@ class PlayStateScene {
     parseChartNotes(chart) {
         this.notes = [];
 
-        // 1. CODENAME ENGINE CHART (strumLines)
+        // 1. CODENAME ENGINE STRUM LINES
         if (chart.strumLines && Array.isArray(chart.strumLines)) {
             chart.strumLines.forEach((strum, lineIndex) => {
                 const isPlayer = (strum.type === 1) || (lineIndex === 1);
@@ -300,13 +296,14 @@ class PlayStateScene {
                             sustain: n.sLen || 0,
                             hit: false,
                             missed: false,
-                            sprite: null
+                            sprite: null,
+                            tailSprite: null
                         });
                     });
                 }
             });
         }
-        // 2. PSYCH ENGINE CHART (notes / sectionNotes)
+        // 2. PSYCH / LEATHER / NMV2 NOTES
         else {
             const songData = chart.song ? chart.song : chart;
             if (songData.notes) {
@@ -316,7 +313,8 @@ class PlayStateScene {
                             const rawDir = n[1];
                             if (rawDir < 0) return; // skip events
 
-                            let isPlayer = section.mustHitSection ? (rawDir < 4) : (rawDir >= 4);
+                            // NMV2 / Psych Rule: 0..3 is Player, 4..7 is Opponent!
+                            const isPlayer = (rawDir < 4);
                             const dir = rawDir % 4;
 
                             this.notes.push({
@@ -326,7 +324,8 @@ class PlayStateScene {
                                 sustain: n[2] || 0,
                                 hit: false,
                                 missed: false,
-                                sprite: null
+                                sprite: null,
+                                tailSprite: null
                             });
                         });
                     }
@@ -337,7 +336,7 @@ class PlayStateScene {
         // Sort chronologically
         this.notes.sort((a, b) => a.time - b.time);
 
-        // Build Visual Sprites for notes
+        // Build sprites
         this.notes.forEach(n => {
             const spr = new PIXI.Graphics();
             drawArrowShape(spr, NOTE_COLORS[n.dir], 32);
@@ -345,6 +344,14 @@ class PlayStateScene {
             spr.visible = false;
             this.container.addChild(spr);
             n.sprite = spr;
+
+            // Hold Trail (Sustain)
+            if (n.sustain > 50) {
+                const tail = new PIXI.Graphics();
+                tail.visible = false;
+                this.container.addChildAt(tail, 0); // behind arrow
+                n.tailSprite = tail;
+            }
         });
 
         console.log(`[GAMEPLAY] Parsed ${this.notes.length} total notes!`);
@@ -376,15 +383,17 @@ class PlayStateScene {
     update() {
         const songPos = Conductor.songPosition;
         const receptorY = 100;
-        const scrollMult = 0.45 * this.speed;
+        
+        // Calibrated smooth scroll multiplier (authentic reaction window)
+        const scrollMult = 0.32 * this.speed;
 
-        // Strumbar smooth bounce reset
+        // Reset strum bounces smoothly
         this.receptors.forEach(r => {
             r.container.scale.x += (1.0 - r.container.scale.x) * 0.2;
             r.container.scale.y += (1.0 - r.container.scale.y) * 0.2;
         });
 
-        // Update each note position
+        // Update Note Positions
         for (let i = 0; i < this.notes.length; i++) {
             const n = this.notes[i];
             if (n.hit || n.missed) continue;
@@ -395,14 +404,16 @@ class PlayStateScene {
             if (!n.isPlayer && diff <= 0) {
                 n.hit = true;
                 n.sprite.visible = false;
+                if (n.tailSprite) n.tailSprite.visible = false;
                 this.hitReceptor(n.dir, false);
                 continue;
             }
 
-            // Player Note Miss (Passed strumline by 160ms)
-            if (n.isPlayer && diff < -160) {
+            // Player Note Miss
+            if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
+                if (n.tailSprite) n.tailSprite.visible = false;
                 this.combo = 0;
                 this.score = Math.max(0, this.score - 100);
                 this.showRating("MISS", 0xff334b);
@@ -410,31 +421,44 @@ class PlayStateScene {
                 continue;
             }
 
-            // Draw note on screen if within viewport range
+            // Render Notes in Viewport
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
-                n.sprite.position.set(targetReceptor.container.x, receptorY + (diff * scrollMult));
+                const noteY = receptorY + (diff * scrollMult);
+
+                n.sprite.position.set(targetReceptor.container.x, noteY);
                 n.sprite.visible = true;
+
+                // Render Hold Trail
+                if (n.tailSprite) {
+                    const tailHeight = n.sustain * scrollMult;
+                    n.tailSprite.clear();
+                    n.tailSprite.beginFill(NOTE_COLORS[n.dir], 0.6);
+                    n.tailSprite.drawRect(-8, 0, 16, tailHeight);
+                    n.tailSprite.endFill();
+                    n.tailSprite.position.set(targetReceptor.container.x, noteY);
+                    n.tailSprite.visible = true;
+                }
             } else {
                 n.sprite.visible = false;
+                if (n.tailSprite) n.tailSprite.visible = false;
             }
         }
     }
 
     hitReceptor(dir, isPlayer) {
         const r = this.receptors[isPlayer ? dir + 4 : dir];
-        r.container.scale.set(1.25);
+        r.container.scale.set(1.22);
         drawArrowShape(r.arrow, NOTE_COLORS[dir], 32);
         setTimeout(() => {
             drawArrowShape(r.arrow, 0x8a95aa, 28);
-        }, 120);
+        }, 110);
     }
 
     onKeyPress(dir) {
         const songPos = Conductor.songPosition;
         this.hitReceptor(dir, true);
 
-        // Find closest unhit player note for this direction
         let closest = null;
         let minDiff = Infinity;
 
@@ -442,7 +466,7 @@ class PlayStateScene {
             const n = this.notes[i];
             if (n.isPlayer && n.dir === dir && !n.hit && !n.missed) {
                 const diff = Math.abs(n.time - songPos);
-                if (diff < minDiff && diff <= 160) {
+                if (diff < minDiff && diff <= 150) {
                     minDiff = diff;
                     closest = n;
                 }
@@ -452,6 +476,7 @@ class PlayStateScene {
         if (closest) {
             closest.hit = true;
             closest.sprite.visible = false;
+            if (closest.tailSprite) closest.tailSprite.visible = false;
             this.combo++;
 
             if (minDiff <= 45) {
@@ -472,7 +497,7 @@ class PlayStateScene {
     showRating(text, color) {
         this.ratingText.text = text;
         this.ratingText.style.fill = color;
-        this.ratingText.scale.set(1.4);
+        this.ratingText.scale.set(1.35);
     }
 
     updateScore() {
@@ -485,7 +510,6 @@ class PlayStateScene {
     }
 }
 
-// Bumps strumlines slightly on the beat
 function onBeatHit(beat) {
     if (playState) {
         playState.receptors.forEach(r => {
@@ -537,10 +561,8 @@ async function launchSong(item) {
     freeplayScreen.classList.add('hidden');
     gameContainer.classList.remove('hidden');
 
-    // Clean old playstate if any
     if (playState) playState.destroy();
 
-    // 1. Locate Audio in VirtualFS
     const songId = item.id.toLowerCase();
     const audioToLoad = [];
 
@@ -558,7 +580,6 @@ async function launchSong(item) {
         return;
     }
 
-    // 2. Decode Audio Buffers
     Conductor.stop();
     Conductor.setBPM(item.bpm);
 
@@ -574,10 +595,8 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 3. Start Strumlines and Gameplay Scene
         playState = new PlayStateScene(item);
 
-        // 4. Start all tracks simultaneously
         const playTime = audioCtx.currentTime + 0.1;
         Conductor.activeSources.forEach(s => s.start(playTime));
         Conductor.start();
