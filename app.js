@@ -15,25 +15,8 @@ const VirtualFS = {
     charts: {},      
     assets: {},      
     shaders: {},
-    stageJsons: {} 
-};
-
-// Permanent Stage Registry (Your tuned layout for Security!)
-const STAGE_PRESETS = {
-    security: {
-        wall:     { x: 640, y: 409, scale: 0.54, layer: 0 },
-        light:    { x: 640, y: -40, scale: 0.54, layer: 0 },
-        shit:     { x: 627, y: 549, scale: 0.65, layer: 1 },
-        vignette: { x: 640, y: 360, scale: 0.57, layer: 1 },
-        props:    { x: 654, y: 217, scale: 0.63, layer: 2 },
-        cabinets: { x: 712, y: 254, scale: 0.66, layer: 3 },
-        tawny:    { x: 260, y: 530, scale: 0.62, layer: 4 },
-        table:    { x: 587, y: 428, scale: 0.54, layer: 5 },
-        gf:       { x: 885, y: 564, scale: 0.62, layer: 1 },
-        dad:      { x: 380, y: 600, scale: 0.65, layer: 2 },
-        minigrey: { x: 300, y: 650, scale: 0.65, layer: 3 },
-        bf:       { x: 991, y: 640, scale: 0.65, layer: 4 }
-    }
+    stageJsons: {},
+    charJsons: {}
 };
 
 const dropOverlay = document.getElementById('drop-overlay');
@@ -98,7 +81,7 @@ async function ingestZip(file) {
     statusBox.innerText = `Scanning: ${file.name}...`;
     const zip = await JSZip.loadAsync(file);
 
-    statusBox.innerText = `Indexing charts & visual assets...`;
+    statusBox.innerText = `Indexing charts, stages & characters...`;
     const scanPromises = [];
     const vsliceMeta = {};
     const vsliceCharts = {};
@@ -109,12 +92,26 @@ async function ingestZip(file) {
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
         VirtualFS.assets[path] = entry;
 
+        // Auto-Index All Stage JSONs (data/stages/*.json)
         if (path.includes('/stages/') && path.endsWith('.json')) {
             const p = entry.async('string').then(text => {
                 try {
                     const parsed = JSON.parse(text.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, ''));
                     const stageKey = path.split('/').pop().replace('.json', '');
                     VirtualFS.stageJsons[stageKey] = parsed;
+                    console.log(`%c[STAGE LOADED] ${stageKey.toUpperCase()}`, "color: #ff9f43; font-weight: bold;");
+                } catch(e) {}
+            });
+            scanPromises.push(p);
+        }
+
+        // Auto-Index All Character JSONs (data/characters/*.json)
+        if (path.includes('/characters/') && path.endsWith('.json')) {
+            const p = entry.async('string').then(text => {
+                try {
+                    const parsed = JSON.parse(text.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, ''));
+                    const charKey = path.split('/').pop().replace('.json', '');
+                    VirtualFS.charJsons[charKey] = parsed;
                 } catch(e) {}
             });
             scanPromises.push(p);
@@ -150,7 +147,7 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json') && !path.endsWith('-metadata.json') && !path.endsWith('-chart.json')) {
+        if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('/characters/') && !path.includes('events.json') && !path.endsWith('-metadata.json') && !path.endsWith('-chart.json')) {
             const p = entry.async('string').then(jsonText => {
                 try {
                     const cleanJson = jsonText.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, '');
@@ -185,7 +182,7 @@ async function ingestZip(file) {
                                 bpm: songData.bpm || parsed.bpm || 150,
                                 speed: parseFloat(cleanSpeed) || 2.5,
                                 stage: songData.stage || parsed.stage || 'security',
-                                player1: songData.player1 || parsed.player1 || 'bf',
+                                player1: songData.player1 || parsed.player1 || 'bfweird',
                                 player2: songData.player2 || parsed.player2 || 'noob49',
                                 chartData: parsed,
                                 chartPath: path
@@ -228,10 +225,10 @@ async function ingestZip(file) {
 
         let player = chars.player || meta.player || parsed.player1;
         if (!player) {
-            player = songKey.includes('suspect') ? 'pico' : 'bf';
+            player = songKey.includes('suspect') ? 'picoweird' : 'bfweird';
         }
 
-        const stage = playData.stage || meta.stage || parsed.stage || (songKey.includes('suspect') ? 'security' : (songKey.includes('trot') ? 'horse' : 'security'));
+        const stage = playData.stage || meta.stage || parsed.stage || (songKey.includes('suspect') ? 'security2' : (songKey.includes('trot') ? 'horse' : (songKey.includes('lied') ? 'medbay' : (songKey.includes('threat') ? 'beach' : 'security'))));
 
         VirtualFS.charts[songKey] = {
             id: songKey,
@@ -269,7 +266,7 @@ function refreshFreeplayUI() {
             <h3>${String(item.name).toUpperCase()}</h3>
             <div class="song-meta">
                 <span>Opponent: <strong>${item.player2}</strong></span>
-                <span>Player: <strong>${item.player1}</strong></span>
+                <span>Stage: <strong>${item.stage}</strong></span>
             </div>
         `;
 
@@ -475,7 +472,8 @@ class DynamicAtlasCharacter {
         this.holdTimer = 0;
         this.fps = 24;
 
-        const scale = isGF ? 0.62 : 0.65;
+        // V-Slice Scale
+        const scale = 1.0;
         this.container.scale.set(this.isPlayer ? scale : (this.isGF ? scale : -scale), scale);
 
         this.renderCurrentFrame();
@@ -555,15 +553,14 @@ class DynamicAtlasCharacter {
         const animMatrix = this.animMatrices[this.currentAnim] || new PIXI.Matrix();
         const rootMat = animMatrix.clone();
         
-        // Accurate character local origins
         if (this.isPico) {
-            rootMat.translate(116, -180); // Pico's exact center offset!
+            rootMat.translate(116, -180);
         } else if (this.isPlayer) {
-            rootMat.translate(-405, -280); // BF center offset!
+            rootMat.translate(-405, -280);
         } else if (this.isGF) {
-            rootMat.translate(-350, -320); // GF speakers offset!
+            rootMat.translate(-350, -320);
         } else {
-            rootMat.translate(-200, -320); // Noob49 offset!
+            rootMat.translate(-200, -320);
         }
 
         renderSymbol(symName, this.frame, rootMat, this.displayContainer);
@@ -630,13 +627,13 @@ function createFallbackCharacter(colorHex, isPlayer) {
 }
 
 // ========================================================
-// --- STAGE & SCENE TREE INSPECTOR ---
+// --- AUTOMATED STAGE ENGINE (BUILT FROM STAGE JSONs!) ---
 // ========================================================
 
 let playState = null;
 
 class PlayStateScene {
-    constructor(songItem, dadChar, bfChar, gfChar, stageData, stageProps) {
+    constructor(songItem, dadChar, bfChar, gfChar, stageData, stageProps, stageJson) {
         this.songItem = songItem;
         this.speed = songItem.speed || 2.5;
 
@@ -663,372 +660,98 @@ class PlayStateScene {
         this.shitSprite = null;
         this.discussSprite = null;
 
-        this.inspectableProps = {};
-        this.selectedProp = null;
-        this.selectionBox = new PIXI.Graphics();
-        this.hudContainer.addChild(this.selectionBox);
-
+        // V-Slice Camera Zoom! (0.7 from stage JSON)
         this.camTargetX = 640;
-        this.camZoom = 1.05;
-        this.baseZoom = 1.05;
+        this.camZoom = (stageJson && stageJson.cameraZoom) ? stageJson.cameraZoom : 0.7;
+        this.baseZoom = this.camZoom;
 
-        this.setupStage(stageData, stageProps);
-        this.setupCharacters(stageProps);
+        this.setupStage(stageData, stageProps, stageJson);
+        this.setupCharacters(stageJson);
         this.setupStrumlines();
         this.parseChartNotes(songItem.chartData);
         this.setupHUD();
-        this.initSceneTreePanel();
 
         app.stage.addChild(this.worldContainer);
         app.stage.addChild(this.hudContainer);
     }
 
-    makeInspectable(name, displayObj, allowDirectClick = true) {
-        displayObj.propName = name;
-        if (allowDirectClick) {
-            displayObj.eventMode = 'static';
-            displayObj.cursor = 'pointer';
-            displayObj.on('pointerdown', (e) => {
-                e.stopPropagation();
-                this.selectInspectableProp(displayObj);
-            });
-        } else {
-            displayObj.eventMode = 'none';
-        }
-        this.inspectableProps[name] = displayObj;
-    }
-
-    setupStage(stageData, stageProps) {
+    setupStage(stageData, stageProps, stageJson) {
         this.stageBack = new PIXI.Container();
         this.stageFront = new PIXI.Container();
 
-        const stageName = (this.songItem.stage || 'security').toLowerCase();
-        const preset = STAGE_PRESETS[stageName] || STAGE_PRESETS.security;
+        // 1. AUTOMATIC V-SLICE STAGE BUILDER
+        if (stageJson && stageJson.props) {
+            stageJson.props.forEach(p => {
+                const cleanName = p.assetPath.split('/').pop().toLowerCase();
+                const tex = stageData[cleanName];
 
-        if (stageData && stageData.wall) {
+                // If it's an animated prop with XML, use its animation, NEVER flat spritesheet!
+                if (stageProps[cleanName]) {
+                    const anim = Object.values(stageProps[cleanName])[0];
+                    const aSpr = new PIXI.AnimatedSprite(anim);
+                    aSpr.position.set(p.position[0], p.position[1]);
+                    aSpr.scale.set(p.scale || 1);
+                    aSpr.zIndex = p.zIndex || 0;
+                    aSpr.loop = false;
+                    this.stageBack.addChild(aSpr);
+
+                    if (cleanName === 'tawny') this.tawnySprite = aSpr;
+                    if (cleanName === 'minigrey') this.minigreySprite = aSpr;
+                    if (cleanName === 'shit') this.shitSprite = aSpr;
+                }
+                else if (tex) {
+                    const spr = new PIXI.Sprite(tex);
+                    spr.position.set(p.position[0], p.position[1]);
+                    spr.scale.set(p.scale || 1);
+                    spr.alpha = (p.alpha !== undefined) ? p.alpha : 1;
+                    if (p.blend === 'subtract') spr.blendMode = PIXI.BLEND_MODES.SUBTRACT;
+                    spr.zIndex = p.zIndex || 0;
+
+                    if (cleanName === 'discuss') {
+                        this.discussSprite = spr;
+                        spr.alpha = 0;
+                    }
+
+                    if (p.zIndex >= 300) {
+                        this.stageFront.addChild(spr);
+                    } else {
+                        this.stageBack.addChild(spr);
+                    }
+                }
+            });
+
+            this.stageBack.sortChildren();
+            this.stageFront.sortChildren();
+        } 
+        // 2. FALLBACK
+        else if (stageData && stageData.wall) {
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
-            wall.position.set(preset.wall.x, preset.wall.y);
-            wall.scale.set(preset.wall.scale);
+            wall.position.set(640, 360);
             this.stageBack.addChild(wall);
-            this.makeInspectable('wall', wall, false);
-
-            if (stageData.props) {
-                const wallProps = new PIXI.Sprite(stageData.props);
-                wallProps.anchor.set(0.5);
-                wallProps.position.set(preset.props.x, preset.props.y);
-                wallProps.scale.set(preset.props.scale);
-                this.stageBack.addChild(wallProps);
-                this.makeInspectable('props', wallProps);
-            }
-
-            if (stageData.cabinets) {
-                const cabs = new PIXI.Sprite(stageData.cabinets);
-                cabs.anchor.set(0.5);
-                cabs.position.set(preset.cabinets.x, preset.cabinets.y);
-                cabs.scale.set(preset.cabinets.scale);
-                this.stageBack.addChild(cabs);
-                this.makeInspectable('cabinets', cabs);
-            }
-
-            if (stageProps && stageProps.tawny) {
-                const anim = stageProps.tawny.bop || Object.values(stageProps.tawny)[0];
-                this.tawnySprite = new PIXI.AnimatedSprite(anim);
-                this.tawnySprite.anchor.set(0.5, 1.0);
-                this.tawnySprite.position.set(preset.tawny.x, preset.tawny.y);
-                this.tawnySprite.scale.set(preset.tawny.scale);
-                this.tawnySprite.loop = false;
-                this.stageBack.addChild(this.tawnySprite);
-                this.makeInspectable('tawny', this.tawnySprite);
-            }
-
-            if (stageData.table) {
-                const desk = new PIXI.Sprite(stageData.table);
-                desk.anchor.set(0.5);
-                desk.position.set(preset.table.x, preset.table.y);
-                desk.scale.set(preset.table.scale);
-                this.stageBack.addChild(desk);
-                this.makeInspectable('table', desk);
-            }
-
-            if (stageProps && stageProps.shit) {
-                const anim = stageProps.shit.bop1 || Object.values(stageProps.shit)[0];
-                this.shitSprite = new PIXI.AnimatedSprite(anim);
-                this.shitSprite.anchor.set(0.5, 1.0);
-                this.shitSprite.position.set(preset.shit.x, preset.shit.y);
-                this.shitSprite.scale.set(preset.shit.scale);
-                this.shitSprite.loop = false;
-                this.stageBack.addChild(this.shitSprite);
-                this.makeInspectable('shit', this.shitSprite);
-            }
-
-            if (stageData.light) {
-                const light = new PIXI.Sprite(stageData.light);
-                light.anchor.set(0.5, 0.0);
-                light.position.set(preset.light.x, preset.light.y);
-                light.scale.set(preset.light.scale);
-                light.blendMode = PIXI.BLEND_MODES.ADD;
-                light.alpha = 0.55;
-                this.stageFront.addChild(light);
-                this.makeInspectable('light', light, false);
-            }
-
-            // Discuss screen (Only for Suspect cutscene!)
-            if (stageData.discuss) {
-                this.discussSprite = new PIXI.Sprite(stageData.discuss);
-                this.discussSprite.anchor.set(0.5);
-                this.discussSprite.position.set(640, 250);
-                this.discussSprite.alpha = 0;
-                this.stageFront.addChild(this.discussSprite);
-            }
-
-            if (stageData.vignette) {
-                const vig = new PIXI.Sprite(stageData.vignette);
-                vig.anchor.set(0.5);
-                vig.position.set(preset.vignette.x, preset.vignette.y);
-                vig.scale.set(preset.vignette.scale);
-                this.stageFront.addChild(vig);
-                this.makeInspectable('vignette', vig, false);
-            }
-        } else {
-            const bg = new PIXI.Graphics();
-            bg.beginFill(0x0c0f18);
-            bg.drawRect(-400, -200, 2080, 1120);
-            bg.endFill();
-            this.stageBack.addChild(bg);
         }
 
         this.worldContainer.addChild(this.stageBack);
     }
 
-    setupCharacters(stageProps) {
-        const stageName = (this.songItem.stage || 'security').toLowerCase();
-        const preset = STAGE_PRESETS[stageName] || STAGE_PRESETS.security;
-
-        if (this.gf) {
-            this.gf.container.position.set(preset.gf.x, preset.gf.y);
-            this.worldContainer.addChild(this.gf.container);
-            this.makeInspectable('gf', this.gf.container);
+    setupCharacters(stageJson) {
+        // Place characters using EXACT V-Slice JSON coordinates!
+        if (stageJson && stageJson.characters) {
+            const c = stageJson.characters;
+            if (this.gf && c.gf) this.gf.container.position.set(c.gf.position[0], c.gf.position[1]);
+            if (this.dad && c.dad) this.dad.container.position.set(c.dad.position[0], c.dad.position[1]);
+            if (this.bf && c.bf) this.bf.container.position.set(c.bf.position[0], c.bf.position[1]);
+        } else {
+            if (this.gf) this.gf.container.position.set(604, 424);
+            this.dad.container.position.set(303, 861);
+            this.bf.container.position.set(970, 892);
         }
 
-        this.dad.container.position.set(preset.dad.x, preset.dad.y);
+        if (this.gf) this.worldContainer.addChild(this.gf.container);
         this.worldContainer.addChild(this.dad.container);
-        this.makeInspectable('dad', this.dad.container);
-
-        if (stageProps && stageProps.minigrey) {
-            const anim = stageProps.minigrey.idle || Object.values(stageProps.minigrey)[0];
-            this.minigreySprite = new PIXI.AnimatedSprite(anim);
-            this.minigreySprite.anchor.set(0.5, 1.0);
-            this.minigreySprite.position.set(preset.minigrey.x, preset.minigrey.y);
-            this.minigreySprite.scale.set(preset.minigrey.scale);
-            this.minigreySprite.loop = false;
-            this.worldContainer.addChild(this.minigreySprite);
-            this.makeInspectable('minigrey', this.minigreySprite);
-        }
-
-        this.bf.container.position.set(preset.bf.x, preset.bf.y);
         this.worldContainer.addChild(this.bf.container);
-        this.makeInspectable('bf', this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
-    }
-
-    initSceneTreePanel() {
-        let treeDom = document.getElementById('scene-tree-panel');
-        if (!treeDom) {
-            treeDom = document.createElement('div');
-            treeDom.id = 'scene-tree-panel';
-            treeDom.style.cssText = `
-                position: absolute; right: 15px; top: 15px; width: 230px; max-height: 480px;
-                background: rgba(15, 18, 26, 0.94); border: 1px solid #00d2d3; border-radius: 8px;
-                padding: 10px; color: #fff; font-family: monospace; font-size: 13px;
-                overflow-y: auto; z-index: 1000; box-shadow: 0 0 15px rgba(0,210,211,0.25);
-                display: none;
-            `;
-            gameContainer.appendChild(treeDom);
-        }
-
-        this.renderSceneTreeUI(treeDom);
-
-        let isDragging = false;
-        let dragOffset = { x: 0, y: 0 };
-
-        app.stage.eventMode = 'static';
-        app.stage.hitArea = app.screen;
-
-        app.stage.on('pointerdown', (e) => {
-            if (this.selectedProp) {
-                isDragging = true;
-                const localPos = this.selectedProp.parent.toLocal(e.global);
-                dragOffset.x = localPos.x - this.selectedProp.x;
-                dragOffset.y = localPos.y - this.selectedProp.y;
-            }
-        });
-
-        app.stage.on('pointermove', (e) => {
-            if (isDragging && this.selectedProp) {
-                const localPos = this.selectedProp.parent.toLocal(e.global);
-                this.selectedProp.x = Math.round(localPos.x - dragOffset.x);
-                this.selectedProp.y = Math.round(localPos.y - dragOffset.y);
-                this.updateInspectorHUD();
-            }
-        });
-
-        window.addEventListener('pointerup', () => { isDragging = false; });
-
-        window.addEventListener('wheel', (e) => {
-            if (this.selectedProp) {
-                e.preventDefault();
-                const delta = e.deltaY < 0 ? 0.03 : -0.03;
-                const signX = Math.sign(this.selectedProp.scale.x) || 1;
-                const signY = Math.sign(this.selectedProp.scale.y) || 1;
-
-                const newScaleX = Math.max(0.1, Math.abs(this.selectedProp.scale.x) + delta);
-                const newScaleY = Math.max(0.1, Math.abs(this.selectedProp.scale.y) + delta);
-
-                this.selectedProp.scale.set(newScaleX * signX, newScaleY * signY);
-                this.updateInspectorHUD();
-            }
-        }, { passive: false });
-
-        window.addEventListener('keydown', (e) => {
-            if (e.key === 'h' || e.key === 'H') {
-                const panel = document.getElementById('scene-tree-panel');
-                if (panel) panel.style.display = (panel.style.display === 'none') ? 'block' : 'none';
-            }
-
-            if (!this.selectedProp) return;
-
-            if (e.key === 'f' || e.key === 'F') {
-                this.selectedProp.scale.x *= -1;
-                this.updateInspectorHUD();
-            }
-
-            const step = e.shiftKey ? 10 : 1;
-            if (e.key === 'ArrowLeft') { this.selectedProp.x -= step; this.updateInspectorHUD(); }
-            if (e.key === 'ArrowRight') { this.selectedProp.x += step; this.updateInspectorHUD(); }
-            if (e.key === 'ArrowUp') { this.selectedProp.y -= step; this.updateInspectorHUD(); }
-            if (e.key === 'ArrowDown') { this.selectedProp.y += step; this.updateInspectorHUD(); }
-
-            if (e.key === '[') {
-                const p = this.selectedProp.parent;
-                const idx = p.getChildIndex(this.selectedProp);
-                if (idx > 0) p.setChildIndex(this.selectedProp, idx - 1);
-                this.updateInspectorHUD();
-            }
-            if (e.key === ']') {
-                const p = this.selectedProp.parent;
-                const idx = p.getChildIndex(this.selectedProp);
-                if (idx < p.children.length - 1) p.setChildIndex(this.selectedProp, idx + 1);
-                this.updateInspectorHUD();
-            }
-
-            if (e.key === 's' || e.key === 'S') {
-                this.exportStageLayout();
-            }
-        });
-    }
-
-    renderSceneTreeUI(panel) {
-        panel.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #2f3542; padding-bottom:6px; margin-bottom:8px;">
-                <strong style="color:#00d2d3">SCENE TREE (H)</strong>
-                <button id="save-tree-btn" style="background:#ff4757; color:#fff; border:none; border-radius:4px; padding:2px 8px; cursor:pointer; font-weight:bold;">SAVE</button>
-            </div>
-            <div id="tree-items-list"></div>
-        `;
-
-        document.getElementById('save-tree-btn').onclick = () => this.exportStageLayout();
-        const listCont = document.getElementById('tree-items-list');
-
-        for (const [name, propObj] of Object.entries(this.inspectableProps)) {
-            const row = document.createElement('div');
-            row.style.cssText = `
-                display: flex; align-items: center; justify-content: space-between;
-                padding: 4px 6px; margin-bottom: 4px; border-radius: 4px; background: #191e2b;
-            `;
-
-            const eyeBtn = document.createElement('button');
-            eyeBtn.innerText = propObj.visible ? '👁' : '🚫';
-            eyeBtn.style.cssText = `background:none; border:none; color:#a4b0be; cursor:pointer; font-size:14px; margin-right:4px;`;
-            eyeBtn.onclick = (e) => {
-                e.stopPropagation();
-                propObj.visible = !propObj.visible;
-                eyeBtn.innerText = propObj.visible ? '👁' : '🚫';
-                eyeBtn.style.color = propObj.visible ? '#a4b0be' : '#ff4757';
-            };
-
-            const flipBtn = document.createElement('button');
-            flipBtn.innerText = '⇄';
-            flipBtn.title = 'Flip (F)';
-            flipBtn.style.cssText = `background:none; border:none; color:#00d2d3; cursor:pointer; font-size:14px; margin-right:6px; font-weight:bold;`;
-            flipBtn.onclick = (e) => {
-                e.stopPropagation();
-                propObj.scale.x *= -1;
-                this.updateInspectorHUD();
-            };
-
-            const selectBtn = document.createElement('button');
-            selectBtn.innerText = name.toUpperCase();
-            selectBtn.style.cssText = `
-                background: none; border: none; color: #fff; text-align: left;
-                flex: 1; cursor: pointer; font-family: monospace; font-weight: bold;
-            `;
-            selectBtn.onclick = () => this.selectInspectableProp(propObj);
-
-            row.appendChild(eyeBtn);
-            row.appendChild(flipBtn);
-            row.appendChild(selectBtn);
-            row.id = `tree-row-${name}`;
-            listCont.appendChild(row);
-        }
-    }
-
-    selectInspectableProp(prop) {
-        this.selectedProp = prop;
-        this.updateInspectorHUD();
-
-        document.querySelectorAll('#tree-items-list div').forEach(r => r.style.background = '#191e2b');
-        const activeRow = document.getElementById(`tree-row-${prop.propName}`);
-        if (activeRow) activeRow.style.background = '#2ed57333';
-    }
-
-    updateInspectorHUD() {
-        if (!this.selectedProp) return;
-
-        const bounds = this.selectedProp.getBounds();
-        this.selectionBox.clear();
-        this.selectionBox.lineStyle(2, 0x2ed573, 1);
-        this.selectionBox.drawRect(bounds.x, bounds.y, bounds.width, bounds.height);
-
-        const sx = Math.abs(this.selectedProp.scale.x).toFixed(2);
-        const isFlipped = this.selectedProp.scale.x < 0;
-        const parentIdx = this.selectedProp.parent ? this.selectedProp.parent.getChildIndex(this.selectedProp) : 0;
-
-        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()} | Pos: (${this.selectedProp.x}, ${this.selectedProp.y}) | Scale: ${sx} | Flipped: ${isFlipped} | Layer: ${parentIdx}\n[F] to Flip | [⇄] Flip Button | [H] Scene Tree | [S] to SAVE`;
-    }
-
-    exportStageLayout() {
-        const layout = {};
-        for (const [name, obj] of Object.entries(this.inspectableProps)) {
-            layout[name] = {
-                x: obj.x,
-                y: obj.y,
-                scale: parseFloat(Math.abs(obj.scale.x).toFixed(2)),
-                flipX: obj.scale.x < 0,
-                layer: obj.parent ? obj.parent.getChildIndex(obj) : 0
-            };
-        }
-
-        const jsonString = JSON.stringify(layout, null, 2);
-        console.log("%c=== EXPORTED STAGE LAYOUT ===", "color: #2ed573; font-size: 16px; font-weight: bold;");
-        console.log(jsonString);
-
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(jsonString).catch(() => {});
-        }
-
-        alert("Stage layout exported to F12 Console & copied to clipboard!");
     }
 
     setupStrumlines() {
@@ -1198,16 +921,6 @@ class PlayStateScene {
         this.ratingText.position.set(1280 / 2, 350);
         this.hudContainer.addChild(this.ratingText);
 
-        this.inspectorText = new PIXI.Text('[PRESS H]: Scene Tree | [F] to Flip | [S] to SAVE', {
-            fontFamily: 'Courier New, monospace',
-            fontSize: 14,
-            fontWeight: 'bold',
-            fill: 0x2ed573,
-            backgroundColor: 0x0f121a
-        });
-        this.inspectorText.position.set(20, 20);
-        this.hudContainer.addChild(this.inspectorText);
-
         this.updateHealthBar();
     }
 
@@ -1281,13 +994,14 @@ class PlayStateScene {
         this.bfIcon.scale.x += (1.0 - this.bfIcon.scale.x) * 0.15;
         this.bfIcon.scale.y += (1.0 - this.bfIcon.scale.y) * 0.15;
 
+        // V-Slice Camera Center (Centers around 650, 450)
         const currentCamX = this.worldContainer.position.x;
-        const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
+        const targetX = 640 - (this.camTargetX - 650) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
 
         this.camZoom += (this.baseZoom - this.camZoom) * 0.08;
         this.worldContainer.scale.set(this.camZoom);
-        this.worldContainer.pivot.set(640, 360);
+        this.worldContainer.pivot.set(650, 450);
         this.worldContainer.position.set(640, 360);
 
         this.receptors.forEach(r => {
@@ -1372,7 +1086,7 @@ class PlayStateScene {
         
         const anims = ['left', 'down', 'up', 'right'];
         this.bf.playAnim(anims[dir], true);
-        this.camTargetX = 820;
+        this.camTargetX = 850;
 
         let closest = null;
         let minDiff = Infinity;
@@ -1425,9 +1139,6 @@ class PlayStateScene {
     }
 
     destroy() {
-        const treeDom = document.getElementById('scene-tree-panel');
-        if (treeDom) treeDom.remove();
-
         app.stage.removeChild(this.worldContainer);
         app.stage.removeChild(this.hudContainer);
         this.worldContainer.destroy({ children: true });
@@ -1446,12 +1157,11 @@ function drawArrowShape(graphics, color, size = 32) {
     graphics.endFill();
 }
 
-// SONG-SPECIFIC STEP CUTSCENES
+// SCRIPTED MOMENTS FROM security2.hxc
 function onStepHit(step) {
     if (playState) {
         const currentSong = playState.songItem.id.toLowerCase();
 
-        // ONLY RUN THESE CUTSCENES IF PLAYING 'SUSPECT'!
         if (currentSong.includes('suspect')) {
             if (step === 60 && playState.discussSprite) {
                 playState.discussSprite.alpha = 1;
@@ -1485,6 +1195,7 @@ function onBeatHit(beat) {
             playState.gf.playAnim(playState.gfDanceLeft ? 'idleleft' : 'idleright', true);
         }
 
+        // Bop Animated Props
         if (playState.tawnySprite && beat % 1 === 0) playState.tawnySprite.gotoAndPlay(0);
         if (playState.minigreySprite && beat % 1 === 0) playState.minigreySprite.gotoAndPlay(0);
         if (playState.shitSprite && beat % 2 === 0) playState.shitSprite.gotoAndPlay(0);
@@ -1694,36 +1405,32 @@ async function launchSong(item) {
         const bfChar = await loadCharacter(item.player1, true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
-        // 2. Load Stage Dynamically (Matches song stage: security, beach, horse, medbay!)
+        // 2. Load Stage Dynamically
         const stageData = {};
         const stageFolder = (item.stage || 'security').toLowerCase().includes('sec') ? 'security' : (item.stage || 'security').toLowerCase();
-        
-        const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette', 'discuss'];
-        const animatedBlacklist = ['tawny', 'minigrey', 'shit', 'player'];
+        const stageJson = VirtualFS.stageJsons[item.stage] || VirtualFS.stageJsons[stageFolder] || null;
 
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
             if (path.includes(`bg/${stageFolder}/`)) {
                 const key = path.split('/').pop().replace(/\.(png|jpg)$/, '');
-                if (stageAssets.includes(key) && !animatedBlacklist.includes(key)) {
-                    if (path.endsWith('.png') || path.endsWith('.jpg')) {
-                        const blob = await entry.async('blob');
-                        const img = new Image();
-                        img.src = URL.createObjectURL(blob);
-                        await new Promise(res => img.onload = res);
-                        stageData[key] = PIXI.Texture.from(img);
-                    }
+                if (path.endsWith('.png') || path.endsWith('.jpg')) {
+                    const blob = await entry.async('blob');
+                    const img = new Image();
+                    img.src = URL.createObjectURL(blob);
+                    await new Promise(res => img.onload = res);
+                    stageData[key] = PIXI.Texture.from(img);
                 }
             }
         }
 
-        // 3. Load Animated Background Crewmates
+        // 3. Load Animated Props
         const stageProps = {
             tawny: await loadAnimatedProp(stageFolder, 'tawny'),
             minigrey: await loadAnimatedProp(stageFolder, 'minigrey'),
             shit: await loadAnimatedProp(stageFolder, 'shit')
         };
 
-        playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData, stageProps);
+        playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData, stageProps, stageJson);
 
         setTimeout(() => {
             if (playState) {
