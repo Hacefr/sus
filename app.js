@@ -10,29 +10,12 @@ const app = new PIXI.Application({
 const gameContainer = document.getElementById('game-container');
 gameContainer.appendChild(app.view);
 
-// --- 2. ADDITIVE VIRTUAL FILE SYSTEM & STAGE PRESETS ---
+// --- 2. ADDITIVE VIRTUAL FILE SYSTEM ---
 const VirtualFS = {
     charts: {},      
     assets: {},      
-    shaders: {}      
-};
-
-// PRESET FOR SECURITY STAGE (Used by both "49" and "Suspect"!)
-const STAGE_PRESETS = {
-    security: {
-        wall:     { x: 640, y: 409, scale: 0.54, layer: 0 },
-        light:    { x: 640, y: -40, scale: 0.54, layer: 0 },
-        shit:     { x: 627, y: 549, scale: 0.65, layer: 1 },
-        vignette: { x: 640, y: 360, scale: 0.57, layer: 1 },
-        props:    { x: 654, y: 217, scale: 0.63, layer: 2 },
-        cabinets: { x: 712, y: 254, scale: 0.66, layer: 3 },
-        tawny:    { x: 260, y: 530, scale: 0.62, layer: 4 },
-        table:    { x: 587, y: 428, scale: 0.54, layer: 5 },
-        gf:       { x: 885, y: 564, scale: 0.62, layer: 1 },
-        dad:      { x: 380, y: 600, scale: 0.65, layer: 2 },
-        minigrey: { x: 300, y: 650, scale: 0.65, layer: 3 },
-        bf:       { x: 991, y: 640, scale: 0.65, layer: 4 }
-    }
+    shaders: {},
+    stageJsons: {} // Auto-ingests all data/stages/*.json!
 };
 
 const dropOverlay = document.getElementById('drop-overlay');
@@ -107,6 +90,19 @@ async function ingestZip(file) {
 
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
         VirtualFS.assets[path] = entry;
+
+        // Auto-detect Stage JSON files (like security2.json!)
+        if (path.includes('/stages/') && path.endsWith('.json')) {
+            const p = entry.async('string').then(text => {
+                try {
+                    const parsed = JSON.parse(text.replace(/^\uFEFF/, '').replace(/\/\/.*$/gm, ''));
+                    const stageKey = path.split('/').pop().replace('.json', '');
+                    VirtualFS.stageJsons[stageKey] = parsed;
+                    console.log(`%c[STAGE JSON LOADED] ${stageKey.toUpperCase()}`, "color: #ff9f43; font-weight: bold;");
+                } catch(e) {}
+            });
+            scanPromises.push(p);
+        }
 
         if (path.endsWith('.frag')) {
             const p = entry.async('string').then(shaderCode => {
@@ -214,13 +210,13 @@ async function ingestZip(file) {
             else opponent = 'purple';
         }
 
-        // Support playing as Pico in Suspect!
+        // Suspect uses Pico!
         let player = chars.player || meta.player || parsed.player1;
         if (!player) {
             player = songKey.includes('suspect') ? 'pico' : 'bf';
         }
 
-        const stage = playData.stage || meta.stage || parsed.stage || 'security';
+        const stage = playData.stage || meta.stage || parsed.stage || (songKey.includes('suspect') ? 'security2' : 'security');
 
         VirtualFS.charts[songKey] = {
             id: songKey,
@@ -279,6 +275,7 @@ const Conductor = {
     stepCrochet: 150,
     songPosition: 0,
     lastBeat: -1,
+    lastStep: -1,
     curBeat: 0,
     curStep: 0,
     isPlaying: false,
@@ -295,6 +292,7 @@ const Conductor = {
         this.startTime = audioCtx.currentTime;
         this.songPosition = 0;
         this.lastBeat = -1;
+        this.lastStep = -1;
         this.isPlaying = true;
     },
 
@@ -311,6 +309,11 @@ const Conductor = {
         this.songPosition = (audioCtx.currentTime - this.startTime) * 1000;
         this.curStep = Math.floor(this.songPosition / this.stepCrochet);
         this.curBeat = Math.floor(this.curStep / 4);
+
+        if (this.curStep > this.lastStep) {
+            this.lastStep = this.curStep;
+            onStepHit(this.curStep);
+        }
 
         if (this.curBeat > this.lastBeat) {
             this.lastBeat = this.curBeat;
@@ -435,6 +438,11 @@ class DynamicAtlasCharacter {
                     assignAnim('right'); assignAnim('singright');
                 }
 
+                // Pico Special Cutscene Anims (from security2.hxc!)
+                if (lower.includes('lock in')) assignAnim('lock in');
+                if (lower.includes('cock')) assignAnim('cock');
+                if (lower.includes('blast')) assignAnim('blast');
+
                 if (lower.includes('miss')) {
                     if (lower.includes('left')) assignAnim('singleftmiss');
                     if (lower.includes('down')) assignAnim('singdownmiss');
@@ -450,7 +458,7 @@ class DynamicAtlasCharacter {
         this.holdTimer = 0;
         this.fps = 24;
 
-        const scale = isGF ? 0.62 : 0.65;
+        const scale = 1.0; // Scaled by V-Slice stage zoom (0.7)!
         this.container.scale.set(this.isPlayer ? scale : (this.isGF ? scale : -scale), scale);
 
         this.renderCurrentFrame();
@@ -602,13 +610,13 @@ function createFallbackCharacter(colorHex, isPlayer) {
 }
 
 // ========================================================
-// --- STAGE & VISUAL SCENE TREE INSPECTOR ---
+// --- STAGE & SCENE TREE INSPECTOR ---
 // ========================================================
 
 let playState = null;
 
 class PlayStateScene {
-    constructor(songItem, dadChar, bfChar, gfChar, stageData, stageProps) {
+    constructor(songItem, dadChar, bfChar, gfChar, stageData, stageProps, stageJson) {
         this.songItem = songItem;
         this.speed = songItem.speed || 2.5;
 
@@ -630,21 +638,18 @@ class PlayStateScene {
 
         this.gfDanceLeft = false;
 
-        this.tawnySprite = null;
-        this.minigreySprite = null;
-        this.shitSprite = null;
-
         this.inspectableProps = {};
         this.selectedProp = null;
         this.selectionBox = new PIXI.Graphics();
         this.hudContainer.addChild(this.selectionBox);
 
+        // V-Slice Camera Zoom! (0.7 from security2.json)
         this.camTargetX = 640;
-        this.camZoom = 1.05;
-        this.baseZoom = 1.05;
+        this.camZoom = (stageJson && stageJson.cameraZoom) ? stageJson.cameraZoom : 0.7;
+        this.baseZoom = this.camZoom;
 
-        this.setupStage(stageData, stageProps);
-        this.setupCharacters(stageProps);
+        this.setupStage(stageData, stageProps, stageJson);
+        this.setupCharacters(stageJson);
         this.setupStrumlines();
         this.parseChartNotes(songItem.chartData);
         this.setupHUD();
@@ -669,143 +674,68 @@ class PlayStateScene {
         this.inspectableProps[name] = displayObj;
     }
 
-    setupStage(stageData, stageProps) {
+    setupStage(stageData, stageProps, stageJson) {
         this.stageBack = new PIXI.Container();
         this.stageFront = new PIXI.Container();
 
-        const preset = STAGE_PRESETS[this.songItem.stage || 'security'] || STAGE_PRESETS.security;
+        // 1. AUTOMATIC V-SLICE STAGE JSON PARSER (from security2.json!)
+        if (stageJson && stageJson.props) {
+            stageJson.props.forEach(p => {
+                const cleanName = p.assetPath.split('/').pop().toLowerCase();
+                const tex = stageData[cleanName];
 
-        if (stageData && stageData.wall) {
-            // 1. Room Background Wall & Floor
+                if (tex) {
+                    const spr = new PIXI.Sprite(tex);
+                    spr.position.set(p.position[0], p.position[1]);
+                    spr.scale.set(p.scale || 1);
+                    spr.alpha = (p.alpha !== undefined) ? p.alpha : 1;
+                    if (p.blend === 'subtract') spr.blendMode = PIXI.BLEND_MODES.SUBTRACT;
+                    spr.zIndex = p.zIndex || 0;
+
+                    this.stageBack.addChild(spr);
+                    this.makeInspectable(p.name || cleanName, spr, p.name !== 'vignette' && p.name !== 'substract');
+                }
+            });
+
+            this.stageBack.sortChildren();
+        } 
+        // 2. FALLBACK STAGE BUILDER
+        else if (stageData && stageData.wall) {
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
-            wall.position.set(preset.wall.x, preset.wall.y);
-            wall.scale.set(preset.wall.scale);
+            wall.position.set(640, 360);
             this.stageBack.addChild(wall);
-            this.makeInspectable('wall', wall, false);
-
-            // 2. Wall Shelf with Party Hat & Frame (props.png)
-            if (stageData.props) {
-                const wallProps = new PIXI.Sprite(stageData.props);
-                wallProps.anchor.set(0.5);
-                wallProps.position.set(preset.props.x, preset.props.y);
-                wallProps.scale.set(preset.props.scale);
-                this.stageBack.addChild(wallProps);
-                this.makeInspectable('props', wallProps);
-            }
-
-            // 3. Cabinets
-            if (stageData.cabinets) {
-                const cabs = new PIXI.Sprite(stageData.cabinets);
-                cabs.anchor.set(0.5);
-                cabs.position.set(preset.cabinets.x, preset.cabinets.y);
-                cabs.scale.set(preset.cabinets.scale);
-                this.stageBack.addChild(cabs);
-                this.makeInspectable('cabinets', cabs);
-            }
-
-            // 4. Tawny (Behind desk)
-            if (stageProps && stageProps.tawny) {
-                const anim = stageProps.tawny.bop || Object.values(stageProps.tawny)[0];
-                this.tawnySprite = new PIXI.AnimatedSprite(anim);
-                this.tawnySprite.anchor.set(0.5, 1.0);
-                this.tawnySprite.position.set(preset.tawny.x, preset.tawny.y);
-                this.tawnySprite.scale.set(preset.tawny.scale);
-                this.tawnySprite.loop = false;
-                this.stageBack.addChild(this.tawnySprite);
-                this.makeInspectable('tawny', this.tawnySprite);
-            }
-
-            // 5. Security Desk
-            if (stageData.table) {
-                const desk = new PIXI.Sprite(stageData.table);
-                desk.anchor.set(0.5);
-                desk.position.set(preset.table.x, preset.table.y);
-                desk.scale.set(preset.table.scale);
-                this.stageBack.addChild(desk);
-                this.makeInspectable('table', desk);
-            }
-
-            // 6. Shit / Poopet
-            if (stageProps && stageProps.shit) {
-                const anim = stageProps.shit.bop1 || Object.values(stageProps.shit)[0];
-                this.shitSprite = new PIXI.AnimatedSprite(anim);
-                this.shitSprite.anchor.set(0.5, 1.0);
-                this.shitSprite.position.set(preset.shit.x, preset.shit.y);
-                this.shitSprite.scale.set(preset.shit.scale);
-                this.shitSprite.loop = false;
-                this.stageBack.addChild(this.shitSprite);
-                this.makeInspectable('shit', this.shitSprite);
-            }
-
-            // 7. Light Spotlight Beam
-            if (stageData.light) {
-                const light = new PIXI.Sprite(stageData.light);
-                light.anchor.set(0.5, 0.0);
-                light.position.set(preset.light.x, preset.light.y);
-                light.scale.set(preset.light.scale);
-                light.blendMode = PIXI.BLEND_MODES.ADD;
-                light.alpha = 0.55;
-                this.stageFront.addChild(light);
-                this.makeInspectable('light', light, false);
-            }
-
-            // 8. Vignette
-            if (stageData.vignette) {
-                const vig = new PIXI.Sprite(stageData.vignette);
-                vig.anchor.set(0.5);
-                vig.position.set(preset.vignette.x, preset.vignette.y);
-                vig.scale.set(preset.vignette.scale);
-                this.stageFront.addChild(vig);
-                this.makeInspectable('vignette', vig, false);
-            }
-        } else {
-            const bg = new PIXI.Graphics();
-            bg.beginFill(0x0c0f18);
-            bg.drawRect(-400, -200, 2080, 1120);
-            bg.endFill();
-            this.stageBack.addChild(bg);
         }
 
         this.worldContainer.addChild(this.stageBack);
     }
 
-    setupCharacters(stageProps) {
-        const preset = STAGE_PRESETS[this.songItem.stage || 'security'] || STAGE_PRESETS.security;
+    setupCharacters(stageJson) {
+        // Place characters using EXACT V-Slice JSON coordinates!
+        if (stageJson && stageJson.characters) {
+            const c = stageJson.characters;
+            if (this.gf && c.gf) this.gf.container.position.set(c.gf.position[0], c.gf.position[1]);
+            if (this.dad && c.dad) this.dad.container.position.set(c.dad.position[0], c.dad.position[1]);
+            if (this.bf && c.bf) this.bf.container.position.set(c.bf.position[0], c.bf.position[1]);
+        } else {
+            if (this.gf) this.gf.container.position.set(640, 600);
+            this.dad.container.position.set(230, 640);
+            this.bf.container.position.set(870, 630);
+        }
 
-        // GF on Speakers
         if (this.gf) {
-            this.gf.container.position.set(preset.gf.x, preset.gf.y);
             this.worldContainer.addChild(this.gf.container);
             this.makeInspectable('gf', this.gf.container);
         }
-
-        // Dad / Opponent
-        this.dad.container.position.set(preset.dad.x, preset.dad.y);
         this.worldContainer.addChild(this.dad.container);
         this.makeInspectable('dad', this.dad.container);
 
-        // Minigrey
-        if (stageProps && stageProps.minigrey) {
-            const anim = stageProps.minigrey.idle || Object.values(stageProps.minigrey)[0];
-            this.minigreySprite = new PIXI.AnimatedSprite(anim);
-            this.minigreySprite.anchor.set(0.5, 1.0);
-            this.minigreySprite.position.set(preset.minigrey.x, preset.minigrey.y);
-            this.minigreySprite.scale.set(preset.minigrey.scale);
-            this.minigreySprite.loop = false;
-            this.worldContainer.addChild(this.minigreySprite);
-            this.makeInspectable('minigrey', this.minigreySprite);
-        }
-
-        // BF / Player (Pico or BF)
-        this.bf.container.position.set(preset.bf.x, preset.bf.y);
         this.worldContainer.addChild(this.bf.container);
         this.makeInspectable('bf', this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
     }
 
-    // --- SCENE TREE PANEL WITH FLIP FEATURE ---
     initSceneTreePanel() {
         let treeDom = document.getElementById('scene-tree-panel');
         if (!treeDom) {
@@ -867,14 +797,11 @@ class PlayStateScene {
         window.addEventListener('keydown', (e) => {
             if (e.key === 'h' || e.key === 'H') {
                 const panel = document.getElementById('scene-tree-panel');
-                if (panel) {
-                    panel.style.display = (panel.style.display === 'none') ? 'block' : 'none';
-                }
+                if (panel) panel.style.display = (panel.style.display === 'none') ? 'block' : 'none';
             }
 
             if (!this.selectedProp) return;
 
-            // F Key -> FLIP HORIZONTALLY!
             if (e.key === 'f' || e.key === 'F') {
                 this.selectedProp.scale.x *= -1;
                 this.updateInspectorHUD();
@@ -924,7 +851,6 @@ class PlayStateScene {
                 padding: 4px 6px; margin-bottom: 4px; border-radius: 4px; background: #191e2b;
             `;
 
-            // Hide / Unhide Button
             const eyeBtn = document.createElement('button');
             eyeBtn.innerText = propObj.visible ? '👁' : '🚫';
             eyeBtn.style.cssText = `background:none; border:none; color:#a4b0be; cursor:pointer; font-size:14px; margin-right:4px;`;
@@ -935,7 +861,6 @@ class PlayStateScene {
                 eyeBtn.style.color = propObj.visible ? '#a4b0be' : '#ff4757';
             };
 
-            // FLIP BUTTON (⇄)
             const flipBtn = document.createElement('button');
             flipBtn.innerText = '⇄';
             flipBtn.title = 'Flip (F)';
@@ -946,7 +871,6 @@ class PlayStateScene {
                 this.updateInspectorHUD();
             };
 
-            // Select Button
             const selectBtn = document.createElement('button');
             selectBtn.innerText = name.toUpperCase();
             selectBtn.style.cssText = `
@@ -1147,7 +1071,8 @@ class PlayStateScene {
         this.barFill = new PIXI.Graphics();
         this.healthBarCont.addChild(this.barFill);
 
-        this.dadIcon = this.createCharacterIcon(0x50586e, false);
+        // Detective on Left, Pico/BF on Right!
+        this.dadIcon = this.createCharacterIcon(0x2f3542, false);
         this.bfIcon = this.createCharacterIcon(0x31b0d5, true);
 
         this.healthBarCont.addChild(this.dadIcon);
@@ -1177,7 +1102,7 @@ class PlayStateScene {
         this.ratingText.position.set(1280 / 2, 350);
         this.hudContainer.addChild(this.ratingText);
 
-        this.inspectorText = new PIXI.Text('[PRESS H]: Toggle Scene Tree | [F] to Flip | [S] to SAVE', {
+        this.inspectorText = new PIXI.Text('[PRESS H]: Scene Tree | [F] to Flip | [S] to SAVE', {
             fontFamily: 'Courier New, monospace',
             fontSize: 14,
             fontWeight: 'bold',
@@ -1215,9 +1140,10 @@ class PlayStateScene {
             g.drawRoundedRect(-6, -14, 28, 18, 8);
             g.endFill();
 
-            g.beginFill(0x2f3542);
-            g.drawRect(-4, -34, 8, 12);
-            g.drawCircle(0, -38, 6);
+            // Detective Hat
+            g.beginFill(0x1e272e);
+            g.drawRect(-26, -26, 52, 8);
+            g.drawRoundedRect(-18, -36, 36, 14, 4);
             g.endFill();
         }
 
@@ -1232,7 +1158,7 @@ class PlayStateScene {
         const pct = Math.max(0, Math.min(2.0, this.health)) / 2.0;
 
         this.barFill.clear();
-        this.barFill.beginFill(0x50586e);
+        this.barFill.beginFill(0x2f3542);
         this.barFill.drawRect(-bw / 2, -bh / 2, bw, bh);
         this.barFill.endFill();
 
@@ -1260,6 +1186,7 @@ class PlayStateScene {
         this.bfIcon.scale.x += (1.0 - this.bfIcon.scale.x) * 0.15;
         this.bfIcon.scale.y += (1.0 - this.bfIcon.scale.y) * 0.15;
 
+        // Camera Smooth Panning
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -1425,6 +1352,25 @@ function drawArrowShape(graphics, color, size = 32) {
     graphics.endFill();
 }
 
+// SCRIPTED MOMENTS FROM security2.hxc!
+function onStepHit(step) {
+    if (playState) {
+        // Step 805: Pico locks in!
+        if (step === 805) {
+            playState.bf.playAnim('lock in', true);
+        }
+        // Step 812: Pico cocks gun!
+        if (step === 812) {
+            playState.bf.playAnim('cock', true);
+            playState.dad.playAnim('right', true);
+        }
+        // Step 816: Pico blasts Detective!
+        if (step === 816) {
+            playState.bf.playAnim('blast', true);
+        }
+    }
+}
+
 function onBeatHit(beat) {
     if (playState) {
         playState.camZoom = playState.baseZoom + 0.035;
@@ -1436,10 +1382,6 @@ function onBeatHit(beat) {
             playState.gfDanceLeft = !playState.gfDanceLeft;
             playState.gf.playAnim(playState.gfDanceLeft ? 'idleleft' : 'idleright', true);
         }
-
-        if (playState.tawnySprite && beat % 1 === 0) playState.tawnySprite.gotoAndPlay(0);
-        if (playState.minigreySprite && beat % 1 === 0) playState.minigreySprite.gotoAndPlay(0);
-        if (playState.shitSprite && beat % 2 === 0) playState.shitSprite.gotoAndPlay(0);
 
         if (playState.dad.holdTimer <= 0) playState.dad.playAnim('idle');
         if (playState.bf.holdTimer <= 0) playState.bf.playAnim('idle');
@@ -1497,14 +1439,13 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
         if (isGF) {
             isMatch = path.includes('characters/cosmicube/gf') || path.includes('characters/gf') || path.includes('/gf/');
         } else if (isPlayer) {
-            // Supports both BF and PICO as players!
             if (clean.includes('pico')) {
                 isMatch = path.includes('characters/cosmicube/pico') || path.includes('characters/pico') || path.includes('/pico/');
             } else {
                 isMatch = path.includes('characters/cosmicube/bf') || path.includes('characters/bf') || path.includes('/bf/');
             }
         } else {
-            isMatch = path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`);
+            isMatch = path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`) || path.includes(`characters/${clean}`);
         }
 
         if (isMatch) {
@@ -1536,17 +1477,14 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
         }
     }
 
-    return createFallbackCharacter(isPlayer ? 0x00d2d3 : (isGF ? 0xa55eea : 0xff334b), isPlayer);
-}
-
-async function loadAnimatedProp(propName) {
+    // Sparrow Sheet Check (Base Game / Detective)
     let pngEntry = null;
     let xmlEntry = null;
 
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        if (path.includes('bg/security/')) {
-            if (path.endsWith(`${propName}.png`)) pngEntry = entry;
-            if (path.endsWith(`${propName}.xml`)) xmlEntry = entry;
+        if (!path.includes('/dialogue/') && !path.includes('/cutscene/')) {
+            if (path.endsWith(`${clean}.png`)) pngEntry = entry;
+            if (path.endsWith(`${clean}.xml`)) xmlEntry = entry;
         }
     }
 
@@ -1561,10 +1499,14 @@ async function loadAnimatedProp(propName) {
 
             const baseTexture = new PIXI.BaseTexture(img);
             const xmlDoc = new DOMParser().parseFromString(xmlText, 'text/xml');
-            return parseSparrowAtlas(baseTexture, xmlDoc);
+            const anims = parseSparrowAtlas(baseTexture, xmlDoc);
+
+            console.log(`%c[SPARROW SHEET LOADED] ${charName.toUpperCase()}`, "color: #2ed573; font-weight: bold;");
+            return new DynamicAtlasCharacter(baseTexture, { SD: { S: [] }, AN: { TL: { L: [] } } }, { ATLAS: { SPRITES: [] } }, isPlayer, isGF);
         } catch(e) {}
     }
-    return null;
+
+    return createFallbackCharacter(isPlayer ? 0x00d2d3 : (isGF ? 0xa55eea : 0xff334b), isPlayer);
 }
 
 // --- LAUNCH SONG ---
@@ -1613,37 +1555,30 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load All 3 Main Characters (Player can be BF or Pico!)
+        // 1. Load All 3 Main Characters
         const dadChar = await loadCharacter(item.player2, false, false);
         const bfChar = await loadCharacter(item.player1, true, false);
         const gfChar = await loadCharacter('gf', false, true);
 
         // 2. Load Stage Background Images
         const stageData = {};
-        const stageAssets = ['wall', 'cabinets', 'table', 'props', 'light', 'vignette'];
+        const stageClean = (item.stage || 'security').toLowerCase();
+        const stageJson = VirtualFS.stageJsons[stageClean] || null;
 
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-            if (path.includes('bg/security/')) {
-                for (const key of stageAssets) {
-                    if (path.endsWith(`${key}.png`)) {
-                        const blob = await entry.async('blob');
-                        const img = new Image();
-                        img.src = URL.createObjectURL(blob);
-                        await new Promise(res => img.onload = res);
-                        stageData[key] = PIXI.Texture.from(img);
-                    }
+            if (path.includes('bg/security/') || (stageClean && path.includes(`bg/${stageClean}/`))) {
+                if (path.endsWith('.png') || path.endsWith('.jpg')) {
+                    const key = path.split('/').pop().replace(/\.(png|jpg)$/, '');
+                    const blob = await entry.async('blob');
+                    const img = new Image();
+                    img.src = URL.createObjectURL(blob);
+                    await new Promise(res => img.onload = res);
+                    stageData[key] = PIXI.Texture.from(img);
                 }
             }
         }
 
-        // 3. Load Animated Background Crewmates
-        const stageProps = {
-            tawny: await loadAnimatedProp('tawny'),
-            minigrey: await loadAnimatedProp('minigrey'),
-            shit: await loadAnimatedProp('shit')
-        };
-
-        playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData, stageProps);
+        playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData, {}, stageJson);
 
         setTimeout(() => {
             if (playState) {
