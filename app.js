@@ -83,7 +83,7 @@ async function ingestZip(file) {
                     const parsed = JSON.parse(cleanJson);
                     const songData = parsed.song ? parsed.song : parsed;
 
-                    const hasNotes = Array.isArray(songData.notes) || Array.isArray(parsed.strumLines);
+                    const hasNotes = Array.isArray(songData.notes) || (songData.notes && typeof songData.notes === 'object') || Array.isArray(parsed.strumLines);
                     const hasTiming = songData.bpm || parsed.bpm || songData.speed || parsed.scrollSpeed;
 
                     if (hasNotes || hasTiming) {
@@ -213,9 +213,10 @@ const Conductor = {
     }
 };
 
-// --- ARROW RECEPTOR GRAPHICS & COLORS ---
+// --- CORRECTED ARROW ROTATIONS & COLORS ---
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; // Left (Purple), Down (Cyan), Up (Green), Right (Red)
-const ARROW_ANGLES = [-Math.PI / 2, 0, Math.PI, Math.PI / 2];
+// FIXED: Down = Math.PI (180deg down), Up = 0 (pointing up)
+const ARROW_ANGLES = [-Math.PI / 2, Math.PI, 0, Math.PI / 2];
 
 function drawArrowShape(graphics, color, size = 32) {
     graphics.clear();
@@ -280,20 +281,26 @@ class PlayStateScene {
         }
     }
 
+    // --- BULLETPROOF UNIVERSAL CHART PARSER ---
     parseChartNotes(chart) {
         this.notes = [];
+        if (!chart) return;
+
+        const data = chart.chartData || chart;
+        const songObj = (data.song && typeof data.song === 'object') ? data.song : data;
 
         // 1. CODENAME ENGINE STRUM LINES
-        if (chart.strumLines && Array.isArray(chart.strumLines)) {
-            chart.strumLines.forEach((strum, lineIndex) => {
+        const strumLines = data.strumLines || (data.song && data.song.strumLines);
+        if (Array.isArray(strumLines)) {
+            strumLines.forEach((strum, lineIndex) => {
                 const isPlayer = (strum.type === 1) || (lineIndex === 1);
-                if (strum.notes) {
+                if (Array.isArray(strum.notes)) {
                     strum.notes.forEach(n => {
                         this.notes.push({
                             time: n.time,
-                            dir: n.id % 4,
+                            dir: (n.id !== undefined ? n.id : (n.dir || 0)) % 4,
                             isPlayer: isPlayer,
-                            sustain: n.sLen || 0,
+                            sustain: n.sLen || n.sustain || 0,
                             hit: false,
                             missed: false,
                             sprite: null,
@@ -303,17 +310,26 @@ class PlayStateScene {
                 }
             });
         }
-        // 2. PSYCH / LEATHER / NMV2 NOTES
+        // 2. PSYCH / LEATHER / NMV2 NOTES (Handles Arrays AND Dictionaries)
         else {
-            const songData = chart.song ? chart.song : chart;
-            if (songData.notes) {
-                songData.notes.forEach(section => {
-                    if (section.sectionNotes) {
+            let sections = songObj.notes || data.notes;
+
+            // If notes is a dictionary/object, convert to array safely
+            if (sections && typeof sections === 'object' && !Array.isArray(sections)) {
+                sections = Object.values(sections);
+            }
+
+            if (Array.isArray(sections)) {
+                sections.forEach(section => {
+                    if (!section) return;
+
+                    // Standard sectionNotes list
+                    if (Array.isArray(section.sectionNotes)) {
                         section.sectionNotes.forEach(n => {
+                            if (!Array.isArray(n) || n.length < 2) return;
                             const rawDir = n[1];
                             if (rawDir < 0) return; // skip events
 
-                            // NMV2 / Psych Rule: 0..3 is Player, 4..7 is Opponent!
                             const isPlayer = (rawDir < 4);
                             const dir = rawDir % 4;
 
@@ -345,16 +361,15 @@ class PlayStateScene {
             this.container.addChild(spr);
             n.sprite = spr;
 
-            // Hold Trail (Sustain)
             if (n.sustain > 50) {
                 const tail = new PIXI.Graphics();
                 tail.visible = false;
-                this.container.addChildAt(tail, 0); // behind arrow
+                this.container.addChildAt(tail, 0);
                 n.tailSprite = tail;
             }
         });
 
-        console.log(`[GAMEPLAY] Parsed ${this.notes.length} total notes!`);
+        console.log(`[GAMEPLAY] Successfully parsed ${this.notes.length} notes!`);
     }
 
     setupHUD() {
@@ -383,17 +398,13 @@ class PlayStateScene {
     update() {
         const songPos = Conductor.songPosition;
         const receptorY = 100;
-        
-        // Calibrated smooth scroll multiplier (authentic reaction window)
         const scrollMult = 0.32 * this.speed;
 
-        // Reset strum bounces smoothly
         this.receptors.forEach(r => {
             r.container.scale.x += (1.0 - r.container.scale.x) * 0.2;
             r.container.scale.y += (1.0 - r.container.scale.y) * 0.2;
         });
 
-        // Update Note Positions
         for (let i = 0; i < this.notes.length; i++) {
             const n = this.notes[i];
             if (n.hit || n.missed) continue;
@@ -421,7 +432,7 @@ class PlayStateScene {
                 continue;
             }
 
-            // Render Notes in Viewport
+            // Draw visible notes
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
                 const noteY = receptorY + (diff * scrollMult);
@@ -429,7 +440,6 @@ class PlayStateScene {
                 n.sprite.position.set(targetReceptor.container.x, noteY);
                 n.sprite.visible = true;
 
-                // Render Hold Trail
                 if (n.tailSprite) {
                     const tailHeight = n.sustain * scrollMult;
                     n.tailSprite.clear();
@@ -564,11 +574,15 @@ async function launchSong(item) {
     if (playState) playState.destroy();
 
     const songId = item.id.toLowerCase();
+    // Normalize string so "don't-lied" matches "dont-lied" or "dontlied"
+    const cleanId = songId.replace(/[^a-z0-9]/g, '');
+
     const audioToLoad = [];
 
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        if (path.includes(`/${songId}/`) || path.includes(`songs/${songId}`)) {
-            if (path.endsWith('.ogg')) {
+        const cleanPath = path.replace(/[^a-z0-9\/\.]/g, '');
+        if (cleanPath.includes(`/${cleanId}/`) || cleanPath.includes(`songs/${cleanId}`)) {
+            if (cleanPath.endsWith('.ogg')) {
                 audioToLoad.push({ path, entry });
             }
         }
