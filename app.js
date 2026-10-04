@@ -154,9 +154,9 @@ async function ingestZip(file) {
                                 name: String(rawName),
                                 bpm: songData.bpm || parsed.bpm || 150,
                                 speed: parseFloat(cleanSpeed) || 2.5,
-                                stage: songData.stage || parsed.stage || 'polus',
+                                stage: songData.stage || parsed.stage || 'security',
                                 player1: songData.player1 || parsed.player1 || 'bf',
-                                player2: songData.player2 || parsed.player2 || 'red',
+                                player2: songData.player2 || parsed.player2 || 'noob49',
                                 chartData: parsed,
                                 chartPath: path
                             };
@@ -192,7 +192,7 @@ async function ingestZip(file) {
             if (songKey.includes('49')) opponent = 'noob49';
             else if (songKey.includes('trot')) opponent = 'horsemate';
             else if (songKey.includes('threat')) opponent = 'maroonthreat';
-            else opponent = 'maroon';
+            else opponent = 'noob49';
         }
 
         const player = chars.player || meta.player || parsed.player1 || 'bf';
@@ -296,206 +296,135 @@ const Conductor = {
 };
 
 // ========================================================
-// --- TEXTURE ATLAS & SPARROW PARSER ---
+// --- ULTRA-LIGHTWEIGHT DYNAMIC TEXTURE ATLAS CHARACTER ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
 const ARROW_ANGLES = [-Math.PI / 2, Math.PI, 0, Math.PI / 2];
 
-function parseSparrowAtlas(baseTexture, xmlDoc) {
-    const subTextures = xmlDoc.getElementsByTagName("SubTexture");
-    const anims = {};
-
-    for (let i = 0; i < subTextures.length; i++) {
-        const sub = subTextures[i];
-        const rawName = sub.getAttribute("name");
-        if (!rawName) continue;
-
-        const match = rawName.match(/^(.*?)([0-9]{4})$/);
-        const animName = match ? match[1] : rawName;
-
-        const x = parseInt(sub.getAttribute("x") || 0);
-        const y = parseInt(sub.getAttribute("y") || 0);
-        const width = parseInt(sub.getAttribute("width") || 0);
-        const height = parseInt(sub.getAttribute("height") || 0);
-
-        const frameX = parseInt(sub.getAttribute("frameX") || 0);
-        const frameY = parseInt(sub.getAttribute("frameY") || 0);
-        const frameWidth = parseInt(sub.getAttribute("frameWidth") || width);
-        const frameHeight = parseInt(sub.getAttribute("frameHeight") || height);
-
-        const rect = new PIXI.Rectangle(x, y, width, height);
-        const orig = new PIXI.Rectangle(0, 0, frameWidth, frameHeight);
-        const trim = new PIXI.Rectangle(-frameX, -frameY, width, height);
-
-        const texture = new PIXI.Texture(baseTexture, rect, orig, trim);
-
-        if (!anims[animName]) anims[animName] = [];
-        anims[animName].push(texture);
-    }
-    return anims;
-}
-
-function parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson) {
-    const spritemap = {};
-    for (const item of spritemapJson.ATLAS.SPRITES) {
-        const s = item.SPRITE;
-        spritemap[s.name] = new PIXI.Texture(baseTexture, new PIXI.Rectangle(s.x, s.y, s.w, s.h));
-    }
-
-    const symbols = {};
-    if (animJson.SD && animJson.SD.S) {
-        for (const s of animJson.SD.S) {
-            symbols[s.SN] = s;
-        }
-    }
-
-    function renderSymbol(symName, frameNum, parentMat, container) {
-        const sym = symbols[symName];
-        if (!sym || !sym.TL || !sym.TL.L) return;
-
-        for (let l = sym.TL.L.length - 1; l >= 0; l--) {
-            const layer = sym.TL.L[l];
-            if (!layer.FR || layer.FR.length === 0) continue;
-
-            let activeFR = null;
-            for (const fr of layer.FR) {
-                if (frameNum >= fr.I && frameNum < fr.I + fr.DU) {
-                    activeFR = fr;
-                    break;
-                }
-            }
-
-            if (!activeFR) activeFR = layer.FR[layer.FR.length - 1];
-            if (!activeFR || !activeFR.E) continue;
-
-            for (const el of activeFR.E) {
-                if (el.ASI) {
-                    const tex = spritemap[el.ASI.N];
-                    if (tex) {
-                        const spr = new PIXI.Sprite(tex);
-                        const localMat = el.ASI.MX ? new PIXI.Matrix(...el.ASI.MX) : new PIXI.Matrix();
-                        const finalMat = parentMat.clone().append(localMat);
-                        spr.transform.setFromMatrix(finalMat);
-                        container.addChild(spr);
-                    }
-                } else if (el.SI) {
-                    let subFrame = 0;
-                    if (el.SI.LP === "SF") {
-                        subFrame = el.SI.FF || 0;
-                    } else {
-                        subFrame = (frameNum - activeFR.I + (el.SI.FF || 0));
-                    }
-
-                    const localMat = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
-                    const finalMat = parentMat.clone().append(localMat);
-                    renderSymbol(el.SI.SN, subFrame, finalMat, container);
-                }
-            }
-        }
-    }
-
-    const anims = {};
-
-    // Handles clean names AND prefixed BF names (e.g. "Misc/.../BF NOTE LEFT")
-    function registerAnimation(targetKey, symName) {
-        const sym = symbols[symName];
-        if (!sym) return;
-
-        let maxFrames = 1;
-        for (const layer of sym.TL.L || []) {
-            for (const fr of layer.FR || []) {
-                maxFrames = Math.max(maxFrames, fr.I + fr.DU);
-            }
-        }
-
-        const frameTextures = [];
-        for (let f = 0; f < maxFrames; f++) {
-            const tempCont = new PIXI.Container();
-            renderSymbol(symName, f, new PIXI.Matrix(), tempCont);
-
-            const renderTexture = PIXI.RenderTexture.create({ width: 900, height: 900 });
-            tempCont.position.set(450, 780); // Exact foot anchor
-            app.renderer.render(tempCont, { renderTexture });
-            frameTextures.push(renderTexture);
-            tempCont.destroy({ children: true });
-        }
-
-        anims[targetKey] = frameTextures;
-    }
-
-    for (const symName of Object.keys(symbols)) {
-        const lower = symName.toLowerCase();
-        
-        if (lower.includes('idle')) registerAnimation('idle', symName);
-        else if (lower.includes('left') && !lower.includes('miss')) {
-            registerAnimation('left', symName);
-            registerAnimation('singleft', symName);
-        }
-        else if (lower.includes('down') && !lower.includes('miss')) {
-            registerAnimation('down', symName);
-            registerAnimation('singdown', symName);
-        }
-        else if (lower.includes('up') && !lower.includes('miss')) {
-            registerAnimation('up', symName);
-            registerAnimation('singup', symName);
-        }
-        else if (lower.includes('right') && !lower.includes('miss')) {
-            registerAnimation('right', symName);
-            registerAnimation('singright', symName);
-        }
-        else if (lower.includes('hey')) registerAnimation('hey', symName);
-    }
-
-    return anims;
-}
-
-class FunkinCharacter {
-    constructor(anims, isPlayer = false, isTextureAtlas = false) {
-        this.anims = anims;
+class DynamicAtlasCharacter {
+    constructor(baseTexture, animJson, spritemapJson, isPlayer = false) {
         this.isPlayer = isPlayer;
-        this.isTextureAtlas = isTextureAtlas;
         this.container = new PIXI.Container();
+        this.displayContainer = new PIXI.Container();
+        this.container.addChild(this.displayContainer);
 
-        const idleKey = Object.keys(anims).find(k => k.toLowerCase().includes('idle')) || Object.keys(anims)[0];
-        this.sprite = new PIXI.AnimatedSprite(anims[idleKey] || [PIXI.Texture.EMPTY]);
-        this.sprite.animationSpeed = 24 / 60;
-        this.sprite.play();
-        this.sprite.anchor.set(0.5, 1.0);
+        // Map Spritemap Cuts directly from spritemap1.png (0 extra VRAM!)
+        this.spritemap = {};
+        for (const item of spritemapJson.ATLAS.SPRITES) {
+            const s = item.SPRITE;
+            this.spritemap[s.name] = new PIXI.Texture(baseTexture, new PIXI.Rectangle(s.x, s.y, s.w, s.h));
+        }
 
-        this.container.addChild(this.sprite);
+        // Symbol dictionary
+        this.symbols = {};
+        if (animJson.SD && animJson.SD.S) {
+            for (const s of animJson.SD.S) {
+                this.symbols[s.SN] = s;
+            }
+        }
+
+        // Map animation names
+        this.animMap = {};
+        for (const symName of Object.keys(this.symbols)) {
+            const lower = symName.toLowerCase();
+            if (lower.includes('idle')) this.animMap['idle'] = symName;
+            else if (lower.includes('left') && !lower.includes('miss')) this.animMap['left'] = symName;
+            else if (lower.includes('down') && !lower.includes('miss')) this.animMap['down'] = symName;
+            else if (lower.includes('up') && !lower.includes('miss')) this.animMap['up'] = symName;
+            else if (lower.includes('right') && !lower.includes('miss')) this.animMap['right'] = symName;
+            else if (lower.includes('hey')) this.animMap['hey'] = symName;
+        }
 
         this.currentAnim = 'idle';
+        this.frame = 0;
+        this.frameTimer = 0;
         this.holdTimer = 0;
+        this.fps = 24;
 
-        // Scale: 0.58 for Texture Atlas (4K), 0.85 for Sparrow (720p)
-        const scale = this.isTextureAtlas ? 0.58 : 0.85;
-        // Opponent faces right; BF faces left
+        // Proportions: Opponent faces right; BF faces left
+        const scale = 0.58;
         this.container.scale.set(this.isPlayer ? scale : -scale, scale);
+
+        this.renderCurrentFrame();
     }
 
     playAnim(animName, forced = false) {
-        const cleanTarget = animName.toLowerCase().replace(/[^a-z0-9]/g, '');
-        
-        let matchedKey = Object.keys(this.anims).find(k => {
-            const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-            return cleanKey === cleanTarget || cleanKey.includes(cleanTarget);
-        });
+        const clean = animName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        let targetKey = Object.keys(this.animMap).find(k => k === clean || clean.includes(k));
 
-        if (!matchedKey && animName === 'idle') {
-            matchedKey = Object.keys(this.anims).find(k => k.toLowerCase().includes('idle'));
-        }
+        if (!targetKey && animName.includes('idle')) targetKey = 'idle';
+        if (!targetKey) targetKey = 'idle';
 
-        if (matchedKey && this.anims[matchedKey]) {
-            this.currentAnim = animName;
-            this.sprite.textures = this.anims[matchedKey];
-            this.sprite.loop = animName.toLowerCase().includes('idle');
-            this.sprite.gotoAndPlay(0);
-
-            if (animName.toLowerCase().startsWith('sing') || animName === 'left' || animName === 'right' || animName === 'up' || animName === 'down') {
+        if (this.animMap[targetKey]) {
+            this.currentAnim = targetKey;
+            this.frame = 0;
+            this.frameTimer = 0;
+            if (targetKey !== 'idle') {
                 this.holdTimer = 0.35;
             }
+            this.renderCurrentFrame();
         }
+    }
+
+    renderCurrentFrame() {
+        const symName = this.animMap[this.currentAnim];
+        const sym = this.symbols[symName];
+        if (!sym) return;
+
+        this.displayContainer.removeChildren();
+
+        const self = this;
+        function renderSymbol(name, frameNum, parentMat, target) {
+            const currentSym = self.symbols[name];
+            if (!currentSym || !currentSym.TL || !currentSym.TL.L) return;
+
+            // Back to Front Layer Stacking
+            for (let l = currentSym.TL.L.length - 1; l >= 0; l--) {
+                const layer = currentSym.TL.L[l];
+                if (!layer.FR || layer.FR.length === 0) continue;
+
+                let activeFR = null;
+                for (const fr of layer.FR) {
+                    if (frameNum >= fr.I && frameNum < fr.I + fr.DU) {
+                        activeFR = fr;
+                        break;
+                    }
+                }
+
+                if (!activeFR) activeFR = layer.FR[layer.FR.length - 1];
+                if (!activeFR || !activeFR.E) continue;
+
+                for (const el of activeFR.E) {
+                    if (el.ASI) {
+                        const tex = self.spritemap[el.ASI.N];
+                        if (tex) {
+                            const spr = new PIXI.Sprite(tex);
+                            const localMat = el.ASI.MX ? new PIXI.Matrix(...el.ASI.MX) : new PIXI.Matrix();
+                            const finalMat = parentMat.clone().append(localMat);
+                            spr.transform.setFromMatrix(finalMat);
+                            target.addChild(spr);
+                        }
+                    } else if (el.SI) {
+                        let subFrame = 0;
+                        if (el.SI.LP === "SF") {
+                            subFrame = el.SI.FF || 0; // Frozen on First Frame!
+                        } else {
+                            subFrame = (frameNum - activeFR.I + (el.SI.FF || 0));
+                        }
+
+                        const localMat = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
+                        const finalMat = parentMat.clone().append(localMat);
+                        renderSymbol(el.SI.SN, subFrame, finalMat, target);
+                    }
+                }
+            }
+        }
+
+        // Draw active symbol with center anchor
+        const rootMat = new PIXI.Matrix();
+        rootMat.translate(-200, -320); // Local floor alignment
+        renderSymbol(symName, this.frame, rootMat, this.displayContainer);
     }
 
     update(deltaSec) {
@@ -504,6 +433,29 @@ class FunkinCharacter {
             if (this.holdTimer <= 0) {
                 this.playAnim('idle');
             }
+        }
+
+        this.frameTimer += deltaSec;
+        if (this.frameTimer >= (1 / this.fps)) {
+            this.frameTimer = 0;
+            this.frame++;
+
+            const symName = this.animMap[this.currentAnim];
+            const sym = this.symbols[symName];
+            if (sym) {
+                let maxFrames = 1;
+                for (const layer of sym.TL.L || []) {
+                    for (const fr of layer.FR || []) {
+                        maxFrames = Math.max(maxFrames, fr.I + fr.DU);
+                    }
+                }
+
+                if (this.frame >= maxFrames) {
+                    this.frame = (this.currentAnim === 'idle') ? 0 : maxFrames - 1;
+                }
+            }
+
+            this.renderCurrentFrame();
         }
     }
 }
@@ -557,11 +509,10 @@ class PlayStateScene {
         this.score = 0;
         this.combo = 0;
 
-        // Camera from security.hxc!
+        // Exact security.hxc camera
         this.camTargetX = 675;
-        this.camTargetY = 450;
-        this.camZoom = 0.9;
-        this.baseZoom = 0.9;
+        this.camZoom = 0.95;
+        this.baseZoom = 0.95;
 
         this.setupStage(stageData);
         this.setupCharacters();
@@ -589,7 +540,7 @@ class PlayStateScene {
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
                 cabs.anchor.set(0.5, 1.0);
-                cabs.position.set(1100, 680);
+                cabs.position.set(1120, 680);
                 cabs.scale.set(1.0);
                 this.stageBack.addChild(cabs);
             }
@@ -603,7 +554,7 @@ class PlayStateScene {
                 this.stageFront.addChild(desk);
             }
 
-            // 4. Overhead Light Beam
+            // 4. Overhead Spotlight Beam
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
@@ -614,7 +565,6 @@ class PlayStateScene {
                 this.stageFront.addChild(light);
             }
         } else {
-            // Space Starfield Default
             const bg = new PIXI.Graphics();
             bg.beginFill(0x0c0f18);
             bg.drawRect(-400, -200, 2080, 1120);
@@ -636,14 +586,13 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        // Feet planted right on the floor!
-        this.dad.container.position.set(380, 540);
+        // Feet anchored cleanly on the floor!
+        this.dad.container.position.set(380, 520);
         this.worldContainer.addChild(this.dad.container);
 
-        this.bf.container.position.set(900, 540);
+        this.bf.container.position.set(900, 520);
         this.worldContainer.addChild(this.bf.container);
 
-        // Add foreground desk on top of feet
         this.worldContainer.addChild(this.stageFront);
     }
 
@@ -777,9 +726,9 @@ class PlayStateScene {
         this.scoreText.position.set(1280 / 2, 670);
         this.hudContainer.addChild(this.scoreText);
 
-        this.ratingText = new PIXI.Text('', {
+        this.ratingText = new PIXI.Text('READY!', {
             fontFamily: 'Segoe UI, sans-serif',
-            fontSize: 36,
+            fontSize: 48,
             fontWeight: 'bold',
             fill: 0x00d2d3,
             align: 'center'
@@ -797,7 +746,7 @@ class PlayStateScene {
         this.dad.update(deltaSec);
         this.bf.update(deltaSec);
 
-        // Exact Camera Panning from security.hxc!
+        // Camera Smooth Panning
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -818,6 +767,7 @@ class PlayStateScene {
 
             const diff = n.time - songPos;
 
+            // Opponent Sings
             if (!n.isPlayer && diff <= 0) {
                 n.hit = true;
                 n.sprite.visible = false;
@@ -826,10 +776,11 @@ class PlayStateScene {
 
                 const anims = ['left', 'down', 'up', 'right'];
                 this.dad.playAnim(anims[n.dir], true);
-                this.camTargetX = 500; // Exact security.hxc camera
+                this.camTargetX = 500;
                 continue;
             }
 
+            // Player Miss
             if (n.isPlayer && diff < -150) {
                 n.missed = true;
                 n.sprite.visible = false;
@@ -841,6 +792,7 @@ class PlayStateScene {
                 continue;
             }
 
+            // Draw Note
             if (diff > -200 && diff < 1600) {
                 const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
                 const noteY = receptorY + (diff * scrollMult);
@@ -877,9 +829,9 @@ class PlayStateScene {
         const songPos = Conductor.songPosition;
         this.hitReceptor(dir, true);
         
-        const anims = ['singLEFT', 'singDOWN', 'singUP', 'singRIGHT'];
+        const anims = ['left', 'down', 'up', 'right'];
         this.bf.playAnim(anims[dir], true);
-        this.camTargetX = 850; // Exact security.hxc camera
+        this.camTargetX = 850;
 
         let closest = null;
         let minDiff = Infinity;
@@ -962,7 +914,7 @@ app.ticker.add((delta) => {
     const deltaSec = delta / 60;
     Conductor.update();
 
-    if (playState && Conductor.isPlaying) {
+    if (playState) {
         playState.update(deltaSec);
         if (playState.ratingText && playState.ratingText.scale.x > 1.0) {
             playState.ratingText.scale.x -= delta * 0.05;
@@ -991,11 +943,11 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// --- ADVANCED CHARACTER LOADER ---
+// --- ADVANCED ULTRA-LEAN CHARACTER LOADER ---
 async function loadCharacter(charName, isPlayer) {
     const clean = charName.toLowerCase().trim();
 
-    // 1. Texture Atlas Check (Noob49, Maroon, and Boyfriend!)
+    // Check for Adobe Animate Texture Atlas
     let animJsonEntry = null;
     let spritemapJsonEntry = null;
     let spritemapPngEntry = null;
@@ -1023,52 +975,19 @@ async function loadCharacter(charName, isPlayer) {
             await new Promise(res => img.onload = res);
 
             const baseTexture = new PIXI.BaseTexture(img);
-            const anims = parseAdobeTextureAtlas(baseTexture, animJson, spritemapJson);
-
-            console.log(`%c[TEXTURE ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
-            return new FunkinCharacter(anims, isPlayer, true);
+            console.log(`%c[DYNAMIC ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
+            
+            // ZERO RenderTextures! Pure real-time lightweight sprites!
+            return new DynamicAtlasCharacter(baseTexture, animJson, spritemapJson, isPlayer);
         } catch(err) {
             console.warn(`Failed loading Texture Atlas for ${charName}:`, err);
-        }
-    }
-
-    // 2. Sparrow Sheet Check (Base Game)
-    let pngEntry = null;
-    let xmlEntry = null;
-
-    for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        if (path.includes('/characters/') && !path.includes('/dialogue/') && !path.includes('/cutscene/')) {
-            if (path.endsWith(`${clean}.png`)) pngEntry = entry;
-            if (path.endsWith(`${clean}.xml`)) xmlEntry = entry;
-        }
-    }
-
-    if (pngEntry && xmlEntry) {
-        try {
-            const pngBlob = await pngEntry.async('blob');
-            const xmlText = await xmlEntry.async('string');
-
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-
-            const img = new Image();
-            img.src = URL.createObjectURL(pngBlob);
-            await new Promise(res => img.onload = res);
-
-            const baseTexture = new PIXI.BaseTexture(img);
-            const anims = parseSparrowAtlas(baseTexture, xmlDoc);
-
-            console.log(`%c[SPARROW SHEET LOADED] ${charName.toUpperCase()}`, "color: #2ed573; font-weight: bold;");
-            return new FunkinCharacter(anims, isPlayer, false);
-        } catch(e) {
-            console.warn(`Failed parsing Sparrow sheet for ${charName}:`, e);
         }
     }
 
     return createFallbackCharacter(isPlayer ? 0x00d2d3 : 0xff334b, isPlayer);
 }
 
-// --- LAUNCH SONG ---
+// --- LAUNCH SONG WITH 1.5s BUFFER ---
 async function launchSong(item) {
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
@@ -1114,13 +1033,13 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        // 1. Load Both Characters!
+        // 1. Load Both Characters (Zero GPU overhead!)
         const dadChar = await loadCharacter(item.player2, false);
         const bfChar = await loadCharacter('bf', true);
 
-        // 2. Load the Complete Security Office Stage
+        // 2. Load the Security Office Stage
         const stageData = {};
-        const stageAssets = ['wall', 'cabinets', 'table', 'light', 'vignette'];
+        const stageAssets = ['wall', 'cabinets', 'table', 'light'];
 
         for (const [path, entry] of Object.entries(VirtualFS.assets)) {
             if (path.includes('bg/security/')) {
@@ -1136,11 +1055,18 @@ async function launchSong(item) {
             }
         }
 
+        // 3. Initialize Scene FIRST so stage and characters are visible!
         playState = new PlayStateScene(item, dadChar, bfChar, stageData);
 
-        const playTime = audioCtx.currentTime + 0.1;
-        Conductor.activeSources.forEach(s => s.start(playTime));
-        Conductor.start();
+        // 4. 1.5-Second Breathing Room before audio and notes start!
+        setTimeout(() => {
+            if (playState) {
+                playState.showRating("GO!", 0x2ed573);
+                const playTime = audioCtx.currentTime + 0.05;
+                Conductor.activeSources.forEach(s => s.start(playTime));
+                Conductor.start();
+            }
+        }, 1500);
 
     } catch(err) {
         console.error("Launch error:", err);
