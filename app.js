@@ -17,6 +17,11 @@ const VirtualFS = {
     shaders: {}      
 };
 
+// Permanent Stage Registry (for porting all songs!)
+const STAGE_PRESETS = {
+    security: null // Gets filled by our Visual Editor export!
+};
+
 const dropOverlay = document.getElementById('drop-overlay');
 const stagedList = document.getElementById('staged-files-list');
 const startBtn = document.getElementById('start-engine-btn');
@@ -578,7 +583,7 @@ function createFallbackCharacter(colorHex, isPlayer) {
 }
 
 // ========================================================
-// --- STAGE & GAMEPLAY SCENE ---
+// --- STAGE & VISUAL IN-ENGINE STAGE INSPECTOR ---
 // ========================================================
 
 let playState = null;
@@ -606,23 +611,42 @@ class PlayStateScene {
 
         this.gfDanceLeft = false;
 
-        // Background Animated Crewmates
         this.tawnySprite = null;
         this.minigreySprite = null;
         this.shitSprite = null;
+
+        // Stage Inspector Registry
+        this.inspectableProps = {};
+        this.selectedProp = null;
+        this.selectionBox = new PIXI.Graphics();
+        this.hudContainer.addChild(this.selectionBox);
 
         this.camTargetX = 640;
         this.camZoom = 1.05;
         this.baseZoom = 1.05;
 
         this.setupStage(stageData, stageProps);
-        this.setupCharacters();
+        this.setupCharacters(stageProps);
         this.setupStrumlines();
         this.parseChartNotes(songItem.chartData);
         this.setupHUD();
+        this.initStageInspector();
 
         app.stage.addChild(this.worldContainer);
         app.stage.addChild(this.hudContainer);
+    }
+
+    makeInspectable(name, displayObj) {
+        displayObj.propName = name;
+        displayObj.eventMode = 'static';
+        displayObj.cursor = 'pointer';
+        
+        displayObj.on('pointerdown', (e) => {
+            e.stopPropagation();
+            this.selectInspectableProp(displayObj);
+        });
+
+        this.inspectableProps[name] = displayObj;
     }
 
     setupStage(stageData, stageProps) {
@@ -633,32 +657,35 @@ class PlayStateScene {
             const rawWidth = stageData.wall.width || 1920;
             const stageScale = 1280 / rawWidth;
 
-            // 1. Room Background Wall & Floor Tiles
+            // 1. Room Background Wall & Floor
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(640, 360);
             wall.scale.set(stageScale);
             this.stageBack.addChild(wall);
+            this.makeInspectable('wall', wall);
 
-            // 2. Wall Shelf with Party Hat & Frame (props.png)
+            // 2. Wall Shelf with Party Hat (props.png)
             if (stageData.props) {
                 const wallProps = new PIXI.Sprite(stageData.props);
                 wallProps.anchor.set(0.5);
                 wallProps.position.set(640, 360);
                 wallProps.scale.set(stageScale);
                 this.stageBack.addChild(wallProps);
+                this.makeInspectable('props', wallProps);
             }
 
-            // 3. Cabinets (Spans left shelf and right cabinet in 1 image!)
+            // 3. Cabinets (Spans left shelf and right cabinet!)
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
                 cabs.anchor.set(0.5);
                 cabs.position.set(640, 360);
                 cabs.scale.set(stageScale);
                 this.stageBack.addChild(cabs);
+                this.makeInspectable('cabinets', cabs);
             }
 
-            // 4. Tawny (Brown Crewmate typing on the laptop behind the desk!)
+            // 4. Tawny (Brown Crewmate behind desk)
             if (stageProps && stageProps.tawny) {
                 const anim = stageProps.tawny.bop || Object.values(stageProps.tawny)[0];
                 this.tawnySprite = new PIXI.AnimatedSprite(anim);
@@ -667,18 +694,20 @@ class PlayStateScene {
                 this.tawnySprite.scale.set(0.65);
                 this.tawnySprite.loop = false;
                 this.stageBack.addChild(this.tawnySprite);
+                this.makeInspectable('tawny', this.tawnySprite);
             }
 
-            // 5. Security Desk with Laptop & Flower Pot
+            // 5. Security Desk with Laptop
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5);
                 desk.position.set(640, 360);
                 desk.scale.set(stageScale);
                 this.stageBack.addChild(desk);
+                this.makeInspectable('table', desk);
             }
 
-            // 6. Shit / Poopet (Bops on desk every 2 beats!)
+            // 6. Shit / Poopet
             if (stageProps && stageProps.shit) {
                 const anim = stageProps.shit.bop1 || Object.values(stageProps.shit)[0];
                 this.shitSprite = new PIXI.AnimatedSprite(anim);
@@ -687,9 +716,10 @@ class PlayStateScene {
                 this.shitSprite.scale.set(0.65);
                 this.shitSprite.loop = false;
                 this.stageBack.addChild(this.shitSprite);
+                this.makeInspectable('shit', this.shitSprite);
             }
 
-            // 7. Overhead Spotlight Beam (Overlay)
+            // 7. Light Spotlight Beam
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
@@ -698,54 +728,170 @@ class PlayStateScene {
                 light.blendMode = PIXI.BLEND_MODES.ADD;
                 light.alpha = 0.55;
                 this.stageFront.addChild(light);
+                this.makeInspectable('light', light);
             }
 
-            // 8. Vignette Shadow Overlay
+            // 8. Vignette
             if (stageData.vignette) {
                 const vig = new PIXI.Sprite(stageData.vignette);
                 vig.anchor.set(0.5);
                 vig.position.set(640, 360);
                 vig.scale.set(stageScale);
                 this.stageFront.addChild(vig);
+                this.makeInspectable('vignette', vig);
             }
-        } else {
-            const bg = new PIXI.Graphics();
-            bg.beginFill(0x0c0f18);
-            bg.drawRect(-400, -200, 2080, 1120);
-            bg.endFill();
-            this.stageBack.addChild(bg);
         }
 
         this.worldContainer.addChild(this.stageBack);
     }
 
-    setupCharacters() {
-        // 1. Centerpiece: Girlfriend on Speakers (Sitting squarely in the middle!)
+    setupCharacters(stageProps) {
+        // GF
         if (this.gf) {
             this.gf.container.position.set(640, 600);
             this.worldContainer.addChild(this.gf.container);
+            this.makeInspectable('gf', this.gf.container);
         }
 
-        // 2. Noob49 on the Front Left Floor!
+        // Dad / Noob49
         this.dad.container.position.set(230, 640);
         this.worldContainer.addChild(this.dad.container);
+        this.makeInspectable('dad', this.dad.container);
 
-        // 3. Minigrey (Little grey imp standing by Noob49's boots!)
-        if (this.stageProps && this.stageProps.minigrey) {
-            const anim = this.stageProps.minigrey.idle || Object.values(this.stageProps.minigrey)[0];
+        // Minigrey
+        if (stageProps && stageProps.minigrey) {
+            const anim = stageProps.minigrey.idle || Object.values(stageProps.minigrey)[0];
             this.minigreySprite = new PIXI.AnimatedSprite(anim);
             this.minigreySprite.anchor.set(0.5, 1.0);
             this.minigreySprite.position.set(90, 680);
             this.minigreySprite.scale.set(0.65);
             this.minigreySprite.loop = false;
             this.worldContainer.addChild(this.minigreySprite);
+            this.makeInspectable('minigrey', this.minigreySprite);
         }
 
-        // 4. Boyfriend sitting squarely on the dark green rug!
+        // BF
         this.bf.container.position.set(870, 630);
         this.worldContainer.addChild(this.bf.container);
+        this.makeInspectable('bf', this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
+    }
+
+    // --- VISUAL STAGE INSPECTOR CONTROLS ---
+    initStageInspector() {
+        let isDragging = false;
+        let dragOffset = { x: 0, y: 0 };
+
+        app.stage.eventMode = 'static';
+        app.stage.hitArea = app.screen;
+
+        app.stage.on('pointerdown', (e) => {
+            if (this.selectedProp) {
+                isDragging = true;
+                const localPos = this.selectedProp.parent.toLocal(e.global);
+                dragOffset.x = localPos.x - this.selectedProp.x;
+                dragOffset.y = localPos.y - this.selectedProp.y;
+            }
+        });
+
+        app.stage.on('pointermove', (e) => {
+            if (isDragging && this.selectedProp) {
+                const localPos = this.selectedProp.parent.toLocal(e.global);
+                this.selectedProp.x = Math.round(localPos.x - dragOffset.x);
+                this.selectedProp.y = Math.round(localPos.y - dragOffset.y);
+                this.updateInspectorHUD();
+            }
+        });
+
+        window.addEventListener('pointerup', () => { isDragging = false; });
+
+        // Mouse Wheel Scaling
+        window.addEventListener('wheel', (e) => {
+            if (this.selectedProp) {
+                e.preventDefault();
+                const delta = e.deltaY < 0 ? 0.03 : -0.03;
+                const signX = Math.sign(this.selectedProp.scale.x) || 1;
+                const signY = Math.sign(this.selectedProp.scale.y) || 1;
+
+                const newScaleX = Math.max(0.1, Math.abs(this.selectedProp.scale.x) + delta);
+                const newScaleY = Math.max(0.1, Math.abs(this.selectedProp.scale.y) + delta);
+
+                this.selectedProp.scale.set(newScaleX * signX, newScaleY * signY);
+                this.updateInspectorHUD();
+            }
+        }, { passive: false });
+
+        // Keyboard Controls: Nudge, Layers, and Export
+        window.addEventListener('keydown', (e) => {
+            if (!this.selectedProp) return;
+
+            const step = e.shiftKey ? 10 : 1;
+            if (e.key === 'ArrowLeft') { this.selectedProp.x -= step; this.updateInspectorHUD(); }
+            if (e.key === 'ArrowRight') { this.selectedProp.x += step; this.updateInspectorHUD(); }
+            if (e.key === 'ArrowUp') { this.selectedProp.y -= step; this.updateInspectorHUD(); }
+            if (e.key === 'ArrowDown') { this.selectedProp.y += step; this.updateInspectorHUD(); }
+
+            // Layer Reordering: [ sends back, ] brings forward
+            if (e.key === '[') {
+                const p = this.selectedProp.parent;
+                const idx = p.getChildIndex(this.selectedProp);
+                if (idx > 0) p.setChildIndex(this.selectedProp, idx - 1);
+                this.updateInspectorHUD();
+            }
+            if (e.key === ']') {
+                const p = this.selectedProp.parent;
+                const idx = p.getChildIndex(this.selectedProp);
+                if (idx < p.children.length - 1) p.setChildIndex(this.selectedProp, idx + 1);
+                this.updateInspectorHUD();
+            }
+
+            // 'S' key -> EXPORT CURRENT STAGE TO CODE!
+            if (e.key === 's' || e.key === 'S') {
+                this.exportStageLayout();
+            }
+        });
+    }
+
+    selectInspectableProp(prop) {
+        this.selectedProp = prop;
+        this.updateInspectorHUD();
+    }
+
+    updateInspectorHUD() {
+        if (!this.selectedProp) return;
+
+        const bounds = this.selectedProp.getBounds();
+        this.selectionBox.clear();
+        this.selectionBox.lineStyle(2, 0x2ed573, 1);
+        this.selectionBox.drawRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+        const sx = Math.abs(this.selectedProp.scale.x).toFixed(2);
+        const parentIdx = this.selectedProp.parent.getChildIndex(this.selectedProp);
+
+        this.inspectorText.text = `[EDITING]: ${this.selectedProp.propName.toUpperCase()}\nPosition: (${this.selectedProp.x}, ${this.selectedProp.y})\nScale: ${sx}  |  Layer: ${parentIdx}\n[Click & Drag] to move | [Scroll] to scale | '[' / ']' for layers | [S] to SAVE`;
+    }
+
+    exportStageLayout() {
+        const layout = {};
+        for (const [name, obj] of Object.entries(this.inspectableProps)) {
+            layout[name] = {
+                x: obj.x,
+                y: obj.y,
+                scale: parseFloat(Math.abs(obj.scale.x).toFixed(2)),
+                layer: obj.parent ? obj.parent.getChildIndex(obj) : 0
+            };
+        }
+
+        const jsonString = JSON.stringify(layout, null, 2);
+        console.log("%c=== EXPORTED STAGE LAYOUT (SAVE THIS!) ===", "color: #2ed573; font-size: 16px; font-weight: bold;");
+        console.log(jsonString);
+
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(jsonString).catch(() => {});
+        }
+
+        alert("Stage layout exported to F12 Console & copied to clipboard!\nPress OK to continue.");
     }
 
     setupStrumlines() {
@@ -868,6 +1014,7 @@ class PlayStateScene {
     }
 
     setupHUD() {
+        // Health Bar (Bottom Center)
         this.healthBarCont = new PIXI.Container();
         this.healthBarCont.position.set(640, 645);
 
@@ -893,6 +1040,7 @@ class PlayStateScene {
 
         this.hudContainer.addChild(this.healthBarCont);
 
+        // Score Text
         this.scoreText = new PIXI.Text('Score: 0 | Misses: 0 | Accuracy: ?', {
             fontFamily: 'Segoe UI, sans-serif',
             fontSize: 16,
@@ -904,6 +1052,7 @@ class PlayStateScene {
         this.scoreText.position.set(640, 678);
         this.hudContainer.addChild(this.scoreText);
 
+        // Rating Text
         this.ratingText = new PIXI.Text('READY!', {
             fontFamily: 'Segoe UI, sans-serif',
             fontSize: 48,
@@ -914,6 +1063,17 @@ class PlayStateScene {
         this.ratingText.anchor.set(0.5);
         this.ratingText.position.set(1280 / 2, 350);
         this.hudContainer.addChild(this.ratingText);
+
+        // On-Screen Inspector HUD Badge
+        this.inspectorText = new PIXI.Text('[INSPECTOR]: Click any prop to edit | [S] to SAVE', {
+            fontFamily: 'Courier New, monospace',
+            fontSize: 14,
+            fontWeight: 'bold',
+            fill: 0x2ed573,
+            backgroundColor: 0x0f121a
+        });
+        this.inspectorText.position.set(20, 20);
+        this.hudContainer.addChild(this.inspectorText);
 
         this.updateHealthBar();
     }
@@ -960,7 +1120,6 @@ class PlayStateScene {
         const pct = Math.max(0, Math.min(2.0, this.health)) / 2.0;
 
         this.barFill.clear();
-
         this.barFill.beginFill(0x50586e);
         this.barFill.drawRect(-bw / 2, -bh / 2, bw, bh);
         this.barFill.endFill();
@@ -989,6 +1148,7 @@ class PlayStateScene {
         this.bfIcon.scale.x += (1.0 - this.bfIcon.scale.x) * 0.15;
         this.bfIcon.scale.y += (1.0 - this.bfIcon.scale.y) * 0.15;
 
+        // Camera Smooth Panning
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
         this.worldContainer.position.x += (targetX - currentCamX) * 0.05;
@@ -1158,13 +1318,11 @@ function onBeatHit(beat) {
         if (playState.dadIcon) playState.dadIcon.scale.set(1.25);
         if (playState.bfIcon) playState.bfIcon.scale.set(1.25);
 
-        // Bop Girlfriend
         if (playState.gf) {
             playState.gfDanceLeft = !playState.gfDanceLeft;
             playState.gf.playAnim(playState.gfDanceLeft ? 'idleleft' : 'idleright', true);
         }
 
-        // Bop Background Crewmates (from security.hxc!)
         if (playState.tawnySprite && beat % 1 === 0) playState.tawnySprite.gotoAndPlay(0);
         if (playState.minigreySprite && beat % 1 === 0) playState.minigreySprite.gotoAndPlay(0);
         if (playState.shitSprite && beat % 2 === 0) playState.shitSprite.gotoAndPlay(0);
@@ -1262,7 +1420,6 @@ async function loadCharacter(charName, isPlayer, isGF = false) {
     return createFallbackCharacter(isPlayer ? 0x00d2d3 : (isGF ? 0xa55eea : 0xff334b), isPlayer);
 }
 
-// Helper to load animated Sparrow props (Tawny, Minigrey, Shit)
 async function loadAnimatedProp(propName) {
     let pngEntry = null;
     let xmlEntry = null;
