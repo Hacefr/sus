@@ -41,73 +41,68 @@ window.addEventListener('drop', async (e) => {
     refreshFreeplayUI();
 });
 
-// --- 4. SMART DEEP SCANNER ---
+// --- 4. UNIVERSAL JSON & ASSET SCANNER ---
 async function ingestZip(file) {
     statusBox.innerText = `Scanning: ${file.name}...`;
     const zip = await JSZip.loadAsync(file);
 
     statusBox.innerText = `Parsing charts & assets from: ${file.name}...`;
-    const chartPromises = [];
+    const scanPromises = [];
 
     zip.forEach((rawPath, entry) => {
         if (entry.dir) return;
 
-        // Normalize path: lowercase and forward slashes
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
-
-        // Store reference in VirtualFS by its clean relative filename
         VirtualFS.assets[path] = entry;
 
-        // SMART CHART DETECTOR:
-        // Finds anything like ".../data/songname/songname.json" or ".../data/songname/songname-hard.json"
-        // regardless of parent folders (assets/, mods/, SecurityDLC/, etc.)
-        const chartMatch = path.match(/(?:^|\/)data\/([^\/]+)\/([^\/]+)\.json$/);
+        // 1. Log and check ALL JSON files
+        if (path.endsWith('.json')) {
+            const p = entry.async('string').then(jsonText => {
+                // Strip comments if present (some FNF mods use // in JSON)
+                const cleanJson = jsonText.replace(/\/\/.*$/gm, '');
+                
+                try {
+                    const parsed = JSON.parse(cleanJson);
+                    const songData = parsed.song ? parsed.song : parsed;
 
-        if (chartMatch) {
-            const folderName = chartMatch[1];
-            const fileName = chartMatch[2];
-
-            // Ignore event-only files
-            if (fileName !== 'events' && fileName !== 'picospeaker') {
-                const p = entry.async('string').then(jsonText => {
-                    try {
-                        const parsed = JSON.parse(jsonText);
+                    // A real FNF chart always has a notes array or section list + bpm
+                    if (songData && (Array.isArray(songData.notes) || songData.notes) && (songData.bpm || songData.speed)) {
                         
-                        // Handle standard Psych Engine / FNF chart format
-                        let songData = parsed.song ? parsed.song : parsed;
-
-                        // Verify it's actually a chart with notes/bpm
-                        if (songData && (songData.notes || songData.bpm)) {
-                            const songName = (typeof songData.song === 'string') 
-                                ? songData.song.toLowerCase().trim() 
-                                : folderName.toLowerCase().trim();
-
-                            // Prefer normal chart, fallback to -hard if normal doesn't exist
-                            if (!VirtualFS.charts[songName] || !fileName.includes('-easy')) {
-                                VirtualFS.charts[songName] = songData;
-                                console.log(`[CHART FOUND] ${songData.song || folderName} (${path})`);
-                            }
+                        let songName = typeof songData.song === 'string' ? songData.song : null;
+                        
+                        // Fallback: extract song name from the folder name
+                        if (!songName) {
+                            const parts = path.split('/');
+                            songName = parts[parts.length - 2] || parts[parts.length - 1].replace('.json', '');
                         }
-                    } catch(err) {
-                        console.warn("Skipping invalid JSON:", path);
+
+                        songName = songName.toLowerCase().trim();
+
+                        // Avoid registering event-only files or overwriting standard charts with easy
+                        if (!path.includes('events') && !path.includes('-easy')) {
+                            VirtualFS.charts[songName] = songData;
+                            console.log(`%c[CHART FOUND] ${songName.toUpperCase()} -> ${path}`, "color: #2ed573; font-weight: bold;");
+                        }
                     }
-                });
-                chartPromises.push(p);
-            }
+                } catch(err) {
+                    // Ignore stage / dialogue / non-standard JSONs silently
+                }
+            });
+            scanPromises.push(p);
         }
 
-        // Cache shaders (.frag files)
+        // 2. Cache Shaders (.frag files)
         if (path.endsWith('.frag')) {
             const p = entry.async('string').then(shaderCode => {
                 const shaderName = path.split('/').pop().replace('.frag', '');
                 VirtualFS.shaders[shaderName] = shaderCode;
-                console.log(`[SHADER FOUND] ${shaderName}`);
+                console.log(`%c[SHADER FOUND] ${shaderName}`, "color: #00d2d3;");
             });
-            chartPromises.push(p);
+            scanPromises.push(p);
         }
     });
 
-    await Promise.all(chartPromises);
+    await Promise.all(scanPromises);
 }
 
 // --- 5. BUILD THE FREEPLAY MENU ---
@@ -115,7 +110,8 @@ function refreshFreeplayUI() {
     const songKeys = Object.keys(VirtualFS.charts);
     
     if (songKeys.length === 0) {
-        statusBox.innerText = "No charts detected! Open DevTools (F12) to see indexed files.";
+        statusBox.innerText = "No charts detected yet. Open F12 Console to see details.";
+        console.warn("Total indexed files in zip:", Object.keys(VirtualFS.assets).length);
         return;
     }
 
@@ -125,7 +121,7 @@ function refreshFreeplayUI() {
     songGrid.innerHTML = '';
     modCounter.innerText = `${songKeys.length} Songs Loaded`;
 
-    // Sort alphabetically
+    // Alphabetical sort
     songKeys.sort().forEach(key => {
         const chart = VirtualFS.charts[key];
         const displayName = chart.song || key;
