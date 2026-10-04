@@ -12,9 +12,9 @@ gameContainer.appendChild(app.view);
 
 // --- 2. ADDITIVE VIRTUAL FILE SYSTEM ---
 const VirtualFS = {
-    charts: {},      // songKey -> { id, name, bpm, speed, chartData, chartPath }
-    assets: {},      // relativePath -> JSZip Entry
-    shaders: {}      // name -> GLSL code string
+    charts: {},      
+    assets: {},      
+    shaders: {}      
 };
 
 const dropOverlay = document.getElementById('drop-overlay');
@@ -56,7 +56,6 @@ async function ingestZip(file) {
         const path = rawPath.toLowerCase().replace(/\\/g, '/');
         VirtualFS.assets[path] = entry;
 
-        // Metadata detection
         if (path.endsWith('meta.json')) {
             const p = entry.async('string').then(text => {
                 try {
@@ -69,7 +68,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // Shader detection
         if (path.endsWith('.frag')) {
             const p = entry.async('string').then(shaderCode => {
                 const shaderName = path.split('/').pop().replace('.frag', '');
@@ -78,7 +76,6 @@ async function ingestZip(file) {
             scanPromises.push(p);
         }
 
-        // Chart detection
         if (path.endsWith('.json') && !path.includes('/stages/') && !path.includes('events.json')) {
             const p = entry.async('string').then(jsonText => {
                 try {
@@ -106,7 +103,6 @@ async function ingestZip(file) {
                             else if (songData.song && typeof songData.song.song === 'string') rawName = songData.song.song;
                             else if (songMeta[songKey] && typeof songMeta[songKey].name === 'string') rawName = songMeta[songKey].name;
 
-                            // Clean scroll speed object if in Codename format
                             let cleanSpeed = songData.speed || parsed.scrollSpeed || 2.5;
                             if (typeof cleanSpeed === 'object' && cleanSpeed !== null) {
                                 cleanSpeed = cleanSpeed.normal || cleanSpeed.hard || cleanSpeed.default || Object.values(cleanSpeed)[0] || 2.5;
@@ -120,8 +116,6 @@ async function ingestZip(file) {
                                 chartData: parsed,
                                 chartPath: path
                             };
-
-                            console.log(`%c[CHART FOUND] ${String(rawName).toUpperCase()} (Speed: ${cleanSpeed})`, "color: #2ed573; font-weight: bold;");
                         }
                     }
                 } catch(err) {}
@@ -162,16 +156,16 @@ function refreshFreeplayUI() {
 }
 
 // ========================================================
-// --- MILESTONE 2: AUDIO ENGINE & HIGH-PRECISION CONDUCTOR ---
+// --- MILESTONE 2 & 3: CONDUCTOR, STRUMBAR & GAMEPLAY ---
 // ========================================================
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
 const Conductor = {
     bpm: 100,
-    crochet: 600,       // ms per beat
-    stepCrochet: 150,   // ms per step
-    songPosition: 0,    // current ms in song
+    crochet: 600,
+    stepCrochet: 150,
+    songPosition: 0,
     lastBeat: -1,
     lastStep: -1,
     curBeat: 0,
@@ -204,16 +198,12 @@ const Conductor = {
 
     update() {
         if (!this.isPlaying) return;
-
-        // Hardware-accurate audio position in milliseconds
         this.songPosition = (audioCtx.currentTime - this.startTime) * 1000;
-
         this.curStep = Math.floor(this.songPosition / this.stepCrochet);
         this.curBeat = Math.floor(this.curStep / 4);
 
         if (this.curStep > this.lastStep) {
             this.lastStep = this.curStep;
-            onStepHit(this.curStep);
         }
 
         if (this.curBeat > this.lastBeat) {
@@ -223,81 +213,323 @@ const Conductor = {
     }
 };
 
-// --- VISUAL ELEMENTS FOR BEAT TESTING ---
-let testContainer = null;
-let speakerVisual = null;
-let hudText = null;
+// --- ARROW RECEPTOR GRAPHICS & COLORS ---
+const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; // Left (Purple), Down (Cyan), Up (Green), Right (Red)
+const ARROW_ANGLES = [-Math.PI / 2, 0, Math.PI, Math.PI / 2];   // Rotations for 4 directions
 
-function setupBeatTestScene(songName) {
-    if (testContainer) app.stage.removeChild(testContainer);
-
-    testContainer = new PIXI.Container();
-
-    // 1. Stylized Among Us Beat Speaker Circle
-    speakerVisual = new PIXI.Graphics();
-    speakerVisual.beginFill(0xff334b);
-    speakerVisual.drawCircle(0, 0, 70);
-    speakerVisual.endFill();
-    speakerVisual.lineStyle(4, 0x00d2d3, 1);
-    speakerVisual.drawCircle(0, 0, 85);
-    speakerVisual.position.set(1280 / 2, 720 / 2);
-    testContainer.addChild(speakerVisual);
-
-    // 2. HUD Info Text
-    hudText = new PIXI.Text('', {
-        fontFamily: 'Segoe UI, sans-serif',
-        fontSize: 22,
-        fill: 0xffffff,
-        align: 'center'
-    });
-    hudText.anchor.set(0.5);
-    hudText.position.set(1280 / 2, 120);
-    testContainer.addChild(hudText);
-
-    // 3. Back Hint
-    const backHint = new PIXI.Text('Press [ESC] to return to Freeplay', {
-        fontFamily: 'Segoe UI, sans-serif',
-        fontSize: 16,
-        fill: 0x747d8c
-    });
-    backHint.position.set(20, 20);
-    testContainer.addChild(backHint);
-
-    app.stage.addChild(testContainer);
+function drawArrowShape(graphics, color, size = 32) {
+    graphics.clear();
+    graphics.beginFill(color);
+    graphics.moveTo(0, -size);
+    graphics.lineTo(size * 0.8, size * 0.7);
+    graphics.lineTo(0, size * 0.4);
+    graphics.lineTo(-size * 0.8, size * 0.7);
+    graphics.closePath();
+    graphics.endFill();
 }
 
-// Bumps on every beat!
-function onBeatHit(beat) {
-    if (speakerVisual) {
-        speakerVisual.scale.set(1.35); // Pop out on beat hit
+// --- GAMEPLAY MANAGER ---
+let playState = null;
+
+class PlayStateScene {
+    constructor(songItem) {
+        this.songItem = songItem;
+        this.speed = songItem.speed || 2.5;
+        this.container = new PIXI.Container();
+
+        this.notes = [];
+        this.receptors = [];
+        this.score = 0;
+        this.combo = 0;
+        this.ratingText = null;
+        this.scoreText = null;
+
+        this.setupStrumlines();
+        this.parseChartNotes(songItem.chartData);
+        this.setupHUD();
+
+        app.stage.addChild(this.container);
+    }
+
+    setupStrumlines() {
+        const startX_Opponent = 120;
+        const startX_Player = 760;
+        const receptorY = 100;
+        const spacing = 110;
+
+        // Create 8 receptors (4 Opponent, 4 Player)
+        for (let i = 0; i < 8; i++) {
+            const isPlayer = i >= 4;
+            const dir = i % 4;
+            const x = (isPlayer ? startX_Player : startX_Opponent) + (dir * spacing);
+
+            const receptor = new PIXI.Container();
+            receptor.position.set(x, receptorY);
+
+            // Base outline
+            const base = new PIXI.Graphics();
+            base.lineStyle(4, 0x444d63, 1);
+            base.drawCircle(0, 0, 42);
+            receptor.addChild(base);
+
+            // Arrow interior
+            const arrow = new PIXI.Graphics();
+            drawArrowShape(arrow, 0x8a95aa, 28);
+            arrow.rotation = ARROW_ANGLES[dir];
+            receptor.addChild(arrow);
+
+            receptor.baseScale = 1.0;
+            this.receptors.push({ container: receptor, dir, isPlayer, arrow, base });
+            this.container.addChild(receptor);
+        }
+    }
+
+    parseChartNotes(chart) {
+        this.notes = [];
+
+        // 1. CODENAME ENGINE CHART (strumLines)
+        if (chart.strumLines && Array.isArray(chart.strumLines)) {
+            chart.strumLines.forEach((strum, lineIndex) => {
+                const isPlayer = (strum.type === 1) || (lineIndex === 1);
+                if (strum.notes) {
+                    strum.notes.forEach(n => {
+                        this.notes.push({
+                            time: n.time,
+                            dir: n.id % 4,
+                            isPlayer: isPlayer,
+                            sustain: n.sLen || 0,
+                            hit: false,
+                            missed: false,
+                            sprite: null
+                        });
+                    });
+                }
+            });
+        }
+        // 2. PSYCH ENGINE CHART (notes / sectionNotes)
+        else {
+            const songData = chart.song ? chart.song : chart;
+            if (songData.notes) {
+                songData.notes.forEach(section => {
+                    if (section.sectionNotes) {
+                        section.sectionNotes.forEach(n => {
+                            const rawDir = n[1];
+                            if (rawDir < 0) return; // skip events
+
+                            let isPlayer = section.mustHitSection ? (rawDir < 4) : (rawDir >= 4);
+                            const dir = rawDir % 4;
+
+                            this.notes.push({
+                                time: n[0],
+                                dir: dir,
+                                isPlayer: isPlayer,
+                                sustain: n[2] || 0,
+                                hit: false,
+                                missed: false,
+                                sprite: null
+                            });
+                        });
+                    }
+                });
+            }
+        }
+
+        // Sort chronologically
+        this.notes.sort((a, b) => a.time - b.time);
+
+        // Build Visual Sprites for notes
+        this.notes.forEach(n => {
+            const spr = new PIXI.Graphics();
+            drawArrowShape(spr, NOTE_COLORS[n.dir], 32);
+            spr.rotation = ARROW_ANGLES[n.dir];
+            spr.visible = false;
+            this.container.addChild(spr);
+            n.sprite = spr;
+        });
+
+        console.log(`[GAMEPLAY] Parsed ${this.notes.length} total notes!`);
+    }
+
+    setupHUD() {
+        this.scoreText = new PIXI.Text('Score: 0 | Combo: 0', {
+            fontFamily: 'Segoe UI, sans-serif',
+            fontSize: 22,
+            fill: 0xffffff,
+            align: 'center'
+        });
+        this.scoreText.anchor.set(0.5);
+        this.scoreText.position.set(1280 / 2, 670);
+        this.container.addChild(this.scoreText);
+
+        this.ratingText = new PIXI.Text('', {
+            fontFamily: 'Segoe UI, sans-serif',
+            fontSize: 36,
+            fontWeight: 'bold',
+            fill: 0x00d2d3,
+            align: 'center'
+        });
+        this.ratingText.anchor.set(0.5);
+        this.ratingText.position.set(1280 / 2, 350);
+        this.container.addChild(this.ratingText);
+    }
+
+    update() {
+        const songPos = Conductor.songPosition;
+        const receptorY = 100;
+        const scrollMult = 0.45 * this.speed;
+
+        // Strumbar smooth bounce reset
+        this.receptors.forEach(r => {
+            r.container.scale.x += (1.0 - r.container.scale.x) * 0.2;
+            r.container.scale.y += (1.0 - r.container.scale.y) * 0.2;
+        });
+
+        // Update each note position
+        for (let i = 0; i < this.notes.length; i++) {
+            const n = this.notes[i];
+            if (n.hit || n.missed) continue;
+
+            const diff = n.time - songPos;
+
+            // Opponent Auto-play
+            if (!n.isPlayer && diff <= 0) {
+                n.hit = true;
+                n.sprite.visible = false;
+                this.hitReceptor(n.dir, false);
+                continue;
+            }
+
+            // Player Note Miss (Passed strumline by 160ms)
+            if (n.isPlayer && diff < -160) {
+                n.missed = true;
+                n.sprite.visible = false;
+                this.combo = 0;
+                this.score = Math.max(0, this.score - 100);
+                this.showRating("MISS", 0xff334b);
+                this.updateScore();
+                continue;
+            }
+
+            // Draw note on screen if within viewport range
+            if (diff > -200 && diff < 1600) {
+                const targetReceptor = this.receptors[n.isPlayer ? n.dir + 4 : n.dir];
+                n.sprite.position.set(targetReceptor.container.x, receptorY + (diff * scrollMult));
+                n.sprite.visible = true;
+            } else {
+                n.sprite.visible = false;
+            }
+        }
+    }
+
+    hitReceptor(dir, isPlayer) {
+        const r = this.receptors[isPlayer ? dir + 4 : dir];
+        r.container.scale.set(1.25);
+        drawArrowShape(r.arrow, NOTE_COLORS[dir], 32);
+        setTimeout(() => {
+            drawArrowShape(r.arrow, 0x8a95aa, 28);
+        }, 120);
+    }
+
+    onKeyPress(dir) {
+        const songPos = Conductor.songPosition;
+        this.hitReceptor(dir, true);
+
+        // Find closest unhit player note for this direction
+        let closest = null;
+        let minDiff = Infinity;
+
+        for (let i = 0; i < this.notes.length; i++) {
+            const n = this.notes[i];
+            if (n.isPlayer && n.dir === dir && !n.hit && !n.missed) {
+                const diff = Math.abs(n.time - songPos);
+                if (diff < minDiff && diff <= 160) {
+                    minDiff = diff;
+                    closest = n;
+                }
+            }
+        }
+
+        if (closest) {
+            closest.hit = true;
+            closest.sprite.visible = false;
+            this.combo++;
+
+            if (minDiff <= 45) {
+                this.score += 350;
+                this.showRating("SICK!", 0x00d2d3);
+            } else if (minDiff <= 90) {
+                this.score += 200;
+                this.showRating("GOOD", 0x2ed573);
+            } else {
+                this.score += 50;
+                this.showRating("BAD", 0xffa502);
+            }
+
+            this.updateScore();
+        }
+    }
+
+    showRating(text, color) {
+        this.ratingText.text = text;
+        this.ratingText.style.fill = color;
+        this.ratingText.scale.set(1.4);
+    }
+
+    updateScore() {
+        this.scoreText.text = `Score: ${this.score} | Combo: ${this.combo}`;
+    }
+
+    destroy() {
+        app.stage.removeChild(this.container);
+        this.container.destroy({ children: true });
     }
 }
 
-function onStepHit(step) {
-    // Reserved for step events
+// Bumps strumlines slightly on the beat
+function onBeatHit(beat) {
+    if (playState) {
+        playState.receptors.forEach(r => {
+            r.container.scale.set(1.08);
+        });
+    }
 }
 
-// Smooth scale down lerp loop
+// --- TICKER LOOP ---
 app.ticker.add((delta) => {
     Conductor.update();
 
-    if (speakerVisual) {
-        // Smoothly shrink back to 1.0 size between beats
-        speakerVisual.scale.x += (1.0 - speakerVisual.scale.x) * 0.15;
-        speakerVisual.scale.y += (1.0 - speakerVisual.scale.y) * 0.15;
+    if (playState && Conductor.isPlaying) {
+        playState.update();
+        if (playState.ratingText && playState.ratingText.scale.x > 1.0) {
+            playState.ratingText.scale.x -= delta * 0.05;
+            playState.ratingText.scale.y -= delta * 0.05;
+        }
+    }
+});
+
+// --- KEYBOARD CONTROLS (D-F-J-K & ARROWS) ---
+const KEY_MAP = {
+    'KeyD': 0, 'ArrowLeft': 0,
+    'KeyF': 1, 'ArrowDown': 1,
+    'KeyJ': 2, 'ArrowUp': 2,
+    'KeyK': 3, 'ArrowRight': 3
+};
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        returnToFreeplay();
+        return;
     }
 
-    if (hudText && Conductor.isPlaying) {
-        const sec = (Math.max(0, Conductor.songPosition) / 1000).toFixed(1);
-        hudText.text = `SONG: ${currentSongItem.name.toUpperCase()}\nBPM: ${Conductor.bpm}  |  TIME: ${sec}s\nBEAT: ${Conductor.curBeat}  |  STEP: ${Conductor.curStep}`;
+    if (playState && KEY_MAP[e.code] !== undefined) {
+        if (!e.repeat) {
+            playState.onKeyPress(KEY_MAP[e.code]);
+        }
     }
 });
 
 // --- AUDIO RESOLVER & LAUNCHER ---
-let currentSongItem = null;
-
 async function launchSong(item) {
-    currentSongItem = item;
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
     }
@@ -305,17 +537,16 @@ async function launchSong(item) {
     freeplayScreen.classList.add('hidden');
     gameContainer.classList.remove('hidden');
 
-    setupBeatTestScene(item.name);
-    hudText.text = `Loading Audio for ${item.name.toUpperCase()}...`;
+    // Clean old playstate if any
+    if (playState) playState.destroy();
 
-    // 1. Locate Inst and Voices in VirtualFS
+    // 1. Locate Audio in VirtualFS
     const songId = item.id.toLowerCase();
     const audioToLoad = [];
 
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
         if (path.includes(`/${songId}/`) || path.includes(`songs/${songId}`)) {
             if (path.endsWith('.ogg')) {
-                // Inst or Voices
                 audioToLoad.push({ path, entry });
             }
         }
@@ -327,7 +558,7 @@ async function launchSong(item) {
         return;
     }
 
-    // 2. Decode Audio Buffers via Web Audio API
+    // 2. Decode Audio Buffers
     Conductor.stop();
     Conductor.setBPM(item.bpm);
 
@@ -341,17 +572,19 @@ async function launchSong(item) {
             source.connect(audioCtx.destination);
 
             Conductor.activeSources.push(source);
-            console.log(`[AUDIO LOADED] ${audioFile.path}`);
         }
 
-        // 3. Start all audio tracks at the exact same millisecond
-        const playTime = audioCtx.currentTime + 0.05;
+        // 3. Start Strumlines and Gameplay Scene
+        playState = new PlayStateScene(item);
+
+        // 4. Start all tracks simultaneously
+        const playTime = audioCtx.currentTime + 0.1;
         Conductor.activeSources.forEach(s => s.start(playTime));
         Conductor.start();
 
     } catch(err) {
         console.error("Audio playback error:", err);
-        alert("Failed to decode audio. Check console (F12).");
+        alert("Failed to start song. Check console (F12).");
         returnToFreeplay();
     }
 }
@@ -359,17 +592,11 @@ async function launchSong(item) {
 // --- EXIT BACK TO FREEPLAY ---
 function returnToFreeplay() {
     Conductor.stop();
-    if (testContainer) app.stage.removeChild(testContainer);
-    testContainer = null;
-    speakerVisual = null;
-    hudText = null;
+    if (playState) {
+        playState.destroy();
+        playState = null;
+    }
 
     gameContainer.classList.add('hidden');
     freeplayScreen.classList.remove('hidden');
 }
-
-window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-        returnToFreeplay();
-    }
-});
