@@ -296,15 +296,26 @@ const Conductor = {
 };
 
 // ========================================================
-// --- DYNAMIC TEXTURE ATLAS CHARACTER (ALIGNED) ---
+// --- DYNAMIC TEXTURE ATLAS CHARACTER (MX + M3D SUPPORT) ---
 // ========================================================
 
 const NOTE_COLORS = [0xc24b99, 0x00ffff, 0x12fa05, 0xf9393f]; 
 const ARROW_ANGLES = [-Math.PI / 2, Math.PI, 0, Math.PI / 2];
 
+function extractMatrix(el) {
+    if (el.MX) {
+        return new PIXI.Matrix(...el.MX);
+    } else if (el.M3D) {
+        // 4x4 matrix conversion to 2D Affine Matrix
+        return new PIXI.Matrix(el.M3D[0], el.M3D[1], el.M3D[4], el.M3D[5], el.M3D[12], el.M3D[13]);
+    }
+    return new PIXI.Matrix();
+}
+
 class DynamicAtlasCharacter {
-    constructor(baseTexture, animJson, spritemapJson, isPlayer = false) {
+    constructor(baseTexture, animJson, spritemapJson, isPlayer = false, isGF = false) {
         this.isPlayer = isPlayer;
+        this.isGF = isGF;
         this.container = new PIXI.Container();
         this.displayContainer = new PIXI.Container();
         this.container.addChild(this.displayContainer);
@@ -322,14 +333,13 @@ class DynamicAtlasCharacter {
             }
         }
 
-        // Build Master Alignment Matrix Map from AN.TL.L (Cancels out 500px jumping!)
         const rootMatrices = {};
         if (animJson.AN && animJson.AN.TL && animJson.AN.TL.L) {
             for (const layer of animJson.AN.TL.L) {
                 for (const fr of layer.FR || []) {
                     for (const el of fr.E || []) {
                         if (el.SI && el.SI.SN) {
-                            rootMatrices[el.SI.SN] = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
+                            rootMatrices[el.SI.SN] = extractMatrix(el.SI);
                         }
                     }
                 }
@@ -348,44 +358,43 @@ class DynamicAtlasCharacter {
                 this.animMatrices[key] = rootMatrices[symName] || new PIXI.Matrix();
             };
 
-            // 1. Normal Colorful Poses
-            if (lower.includes('idle') && !isCopyOrAlt && !this.animMap['idle']) {
-                assignAnim('idle');
-            }
-            else if (lower.includes('left') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['left']) {
-                assignAnim('left');
-                assignAnim('singleft');
-            }
-            else if (lower.includes('down') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['down']) {
-                assignAnim('down');
-                assignAnim('singdown');
-            }
-            else if (lower.includes('up') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['up']) {
-                assignAnim('up');
-                assignAnim('singup');
-            }
-            else if (lower.includes('right') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['right']) {
-                assignAnim('right');
-                assignAnim('singright');
-            }
+            if (this.isGF) {
+                if (lower.includes('idle1') || lower.includes('idleleft')) assignAnim('idleleft');
+                if (lower.includes('idle2') || lower.includes('idleright')) assignAnim('idleright');
+                if (lower.includes('cheer')) assignAnim('cheer');
+                if (lower.includes('sad')) assignAnim('sad');
+            } else {
+                if (lower.includes('idle') && !isCopyOrAlt && !this.animMap['idle']) assignAnim('idle');
+                else if (lower.includes('left') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['left']) {
+                    assignAnim('left'); assignAnim('singleft');
+                }
+                else if (lower.includes('down') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['down']) {
+                    assignAnim('down'); assignAnim('singdown');
+                }
+                else if (lower.includes('up') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['up']) {
+                    assignAnim('up'); assignAnim('singup');
+                }
+                else if (lower.includes('right') && !lower.includes('miss') && !isCopyOrAlt && !this.animMap['right']) {
+                    assignAnim('right'); assignAnim('singright');
+                }
 
-            // 2. Dedicated Purple Miss Poses
-            if (lower.includes('miss')) {
-                if (lower.includes('left')) assignAnim('singleftmiss');
-                if (lower.includes('down')) assignAnim('singdownmiss');
-                if (lower.includes('up')) assignAnim('singupmiss');
-                if (lower.includes('right')) assignAnim('singrightmiss');
+                if (lower.includes('miss')) {
+                    if (lower.includes('left')) assignAnim('singleftmiss');
+                    if (lower.includes('down')) assignAnim('singdownmiss');
+                    if (lower.includes('up')) assignAnim('singupmiss');
+                    if (lower.includes('right')) assignAnim('singrightmiss');
+                }
             }
         }
 
-        this.currentAnim = 'idle';
+        this.currentAnim = this.isGF ? 'idleleft' : 'idle';
         this.frame = 0;
         this.frameTimer = 0;
         this.holdTimer = 0;
         this.fps = 24;
 
         const scale = 0.65;
-        this.container.scale.set(this.isPlayer ? scale : -scale, scale);
+        this.container.scale.set(this.isPlayer ? scale : (this.isGF ? scale : -scale), scale);
 
         this.renderCurrentFrame();
     }
@@ -394,14 +403,14 @@ class DynamicAtlasCharacter {
         const clean = animName.toLowerCase().replace(/[^a-z0-9]/g, '');
         let targetKey = Object.keys(this.animMap).find(k => k === clean || clean.includes(k));
 
-        if (!targetKey && animName.includes('idle')) targetKey = 'idle';
-        if (!targetKey) targetKey = 'idle';
+        if (!targetKey && animName.includes('idle')) targetKey = this.isGF ? 'idleleft' : 'idle';
+        if (!targetKey) targetKey = this.isGF ? 'idleleft' : 'idle';
 
         if (this.animMap[targetKey]) {
             this.currentAnim = targetKey;
             this.frame = 0;
             this.frameTimer = 0;
-            if (targetKey !== 'idle') {
+            if (!targetKey.includes('idle')) {
                 this.holdTimer = 0.35;
             }
             this.renderCurrentFrame();
@@ -440,7 +449,7 @@ class DynamicAtlasCharacter {
                         const tex = self.spritemap[el.ASI.N];
                         if (tex) {
                             const spr = new PIXI.Sprite(tex);
-                            const localMat = el.ASI.MX ? new PIXI.Matrix(...el.ASI.MX) : new PIXI.Matrix();
+                            const localMat = extractMatrix(el.ASI);
                             const finalMat = parentMat.clone().append(localMat);
                             spr.transform.setFromMatrix(finalMat);
                             target.addChild(spr);
@@ -453,7 +462,7 @@ class DynamicAtlasCharacter {
                             subFrame = (frameNum - activeFR.I + (el.SI.FF || 0));
                         }
 
-                        const localMat = el.SI.MX ? new PIXI.Matrix(...el.SI.MX) : new PIXI.Matrix();
+                        const localMat = extractMatrix(el.SI);
                         const finalMat = parentMat.clone().append(localMat);
                         renderSymbol(el.SI.SN, subFrame, finalMat, target);
                     }
@@ -461,13 +470,13 @@ class DynamicAtlasCharacter {
             }
         }
 
-        // Apply Counter-Alignment Matrix to cancel out teleporting!
         const animMatrix = this.animMatrices[this.currentAnim] || new PIXI.Matrix();
         const rootMat = animMatrix.clone();
         
-        // Center feet on floor
         if (this.isPlayer) {
             rootMat.translate(-405, -280);
+        } else if (this.isGF) {
+            rootMat.translate(-350, -320); // Center speakers
         } else {
             rootMat.translate(-200, -320);
         }
@@ -479,7 +488,7 @@ class DynamicAtlasCharacter {
         if (this.holdTimer > 0) {
             this.holdTimer -= deltaSec;
             if (this.holdTimer <= 0) {
-                this.playAnim('idle');
+                this.playAnim(this.isGF ? 'idleleft' : 'idle');
             }
         }
 
@@ -499,7 +508,7 @@ class DynamicAtlasCharacter {
                 }
 
                 if (this.frame >= maxFrames) {
-                    this.frame = (this.currentAnim === 'idle') ? 0 : maxFrames - 1;
+                    this.frame = (this.currentAnim.includes('idle')) ? 0 : maxFrames - 1;
                 }
             }
 
@@ -542,7 +551,7 @@ function createFallbackCharacter(colorHex, isPlayer) {
 let playState = null;
 
 class PlayStateScene {
-    constructor(songItem, dadChar, bfChar, stageData) {
+    constructor(songItem, dadChar, bfChar, gfChar, stageData) {
         this.songItem = songItem;
         this.speed = songItem.speed || 2.5;
 
@@ -551,11 +560,13 @@ class PlayStateScene {
 
         this.dad = dadChar;
         this.bf = bfChar;
+        this.gf = gfChar;
 
         this.notes = [];
         this.receptors = [];
         this.score = 0;
         this.combo = 0;
+        this.gfDanceLeft = false;
 
         this.camTargetX = 640;
         this.camZoom = 1.05;
@@ -576,28 +587,32 @@ class PlayStateScene {
         this.stageFront = new PIXI.Container();
 
         if (stageData && stageData.wall) {
+            // 1. Room Background Wall & Floor
             const wall = new PIXI.Sprite(stageData.wall);
             wall.anchor.set(0.5);
             wall.position.set(640, 360);
-            wall.scale.set(1.2);
+            wall.scale.set(1.18);
             this.stageBack.addChild(wall);
 
+            // 2. Far Left Shelves / Cabinets
             if (stageData.cabinets) {
                 const cabs = new PIXI.Sprite(stageData.cabinets);
                 cabs.anchor.set(0.5, 1.0);
-                cabs.position.set(1180, 560);
-                cabs.scale.set(0.9);
+                cabs.position.set(80, 520);
+                cabs.scale.set(0.75);
                 this.stageBack.addChild(cabs);
             }
 
+            // 3. Security Desk / Table with Laptop (Sits behind Noob49)
             if (stageData.table) {
                 const desk = new PIXI.Sprite(stageData.table);
                 desk.anchor.set(0.5, 1.0);
-                desk.position.set(400, 560);
-                desk.scale.set(0.92);
+                desk.position.set(340, 500);
+                desk.scale.set(0.7);
                 this.stageBack.addChild(desk);
             }
 
+            // 4. Overhead Spotlight Beam (Overlay)
             if (stageData.light) {
                 const light = new PIXI.Sprite(stageData.light);
                 light.anchor.set(0.5, 0.0);
@@ -629,10 +644,18 @@ class PlayStateScene {
     }
 
     setupCharacters() {
-        this.dad.container.position.set(280, 640);
+        // 1. Centerpiece: Girlfriend on Speakers (Covers desk leg!)
+        if (this.gf) {
+            this.gf.container.position.set(620, 550);
+            this.worldContainer.addChild(this.gf.container);
+        }
+
+        // 2. Noob49 on the Front Left Floor!
+        this.dad.container.position.set(230, 640);
         this.worldContainer.addChild(this.dad.container);
 
-        this.bf.container.position.set(950, 640);
+        // 3. Boyfriend on the Front Right Carpet!
+        this.bf.container.position.set(980, 640);
         this.worldContainer.addChild(this.bf.container);
 
         this.worldContainer.addChild(this.stageFront);
@@ -787,6 +810,7 @@ class PlayStateScene {
 
         this.dad.update(deltaSec);
         this.bf.update(deltaSec);
+        if (this.gf) this.gf.update(deltaSec);
 
         const currentCamX = this.worldContainer.position.x;
         const targetX = 640 - (this.camTargetX - 640) * this.camZoom;
@@ -817,7 +841,7 @@ class PlayStateScene {
 
                 const anims = ['left', 'down', 'up', 'right'];
                 this.dad.playAnim(anims[n.dir], true);
-                this.camTargetX = 460;
+                this.camTargetX = 500; // Exact security.hxc camera
                 continue;
             }
 
@@ -875,7 +899,7 @@ class PlayStateScene {
         
         const anims = ['left', 'down', 'up', 'right'];
         this.bf.playAnim(anims[dir], true);
-        this.camTargetX = 820;
+        this.camTargetX = 850; // Exact security.hxc camera
 
         let closest = null;
         let minDiff = Infinity;
@@ -945,6 +969,12 @@ function onBeatHit(beat) {
     if (playState) {
         playState.camZoom = playState.baseZoom + 0.035;
 
+        // GF bobs left on beat 1, right on beat 2!
+        if (playState.gf) {
+            playState.gfDanceLeft = !playState.gfDanceLeft;
+            playState.gf.playAnim(playState.gfDanceLeft ? 'idleleft' : 'idleright', true);
+        }
+
         if (playState.dad.holdTimer <= 0) playState.dad.playAnim('idle');
         if (playState.bf.holdTimer <= 0) playState.bf.playAnim('idle');
 
@@ -987,8 +1017,8 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// --- ADVANCED CHARACTER LOADER ---
-async function loadCharacter(charName, isPlayer) {
+// --- ADVANCED UNIVERSAL CHARACTER LOADER ---
+async function loadCharacter(charName, isPlayer, isGF = false) {
     const clean = charName.toLowerCase().trim();
 
     let animJsonEntry = null;
@@ -996,9 +1026,15 @@ async function loadCharacter(charName, isPlayer) {
     let spritemapPngEntry = null;
 
     for (const [path, entry] of Object.entries(VirtualFS.assets)) {
-        const isMatch = isPlayer 
-            ? (path.includes('characters/cosmicube/bf') || path.includes('characters/bf') || path.includes('/bf/'))
-            : (path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`));
+        let isMatch = false;
+
+        if (isGF) {
+            isMatch = path.includes('characters/cosmicube/gf') || path.includes('characters/gf') || path.includes('/gf/');
+        } else if (isPlayer) {
+            isMatch = path.includes('characters/cosmicube/bf') || path.includes('characters/bf') || path.includes('/bf/');
+        } else {
+            isMatch = path.includes(`/${clean}/`) || path.includes(`characters/dlc/${clean}/`);
+        }
 
         if (isMatch) {
             if (path.endsWith('animation.json')) animJsonEntry = entry;
@@ -1018,15 +1054,15 @@ async function loadCharacter(charName, isPlayer) {
             await new Promise(res => img.onload = res);
 
             const baseTexture = new PIXI.BaseTexture(img);
-            console.log(`%c[DYNAMIC ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
+            console.log(`%c[TEXTURE ATLAS LOADED] ${charName.toUpperCase()}`, "color: #00d2d3; font-weight: bold;");
             
-            return new DynamicAtlasCharacter(baseTexture, animJson, spritemapJson, isPlayer);
+            return new DynamicAtlasCharacter(baseTexture, animJson, spritemapJson, isPlayer, isGF);
         } catch(err) {
             console.warn(`Failed loading Texture Atlas for ${charName}:`, err);
         }
     }
 
-    return createFallbackCharacter(isPlayer ? 0x00d2d3 : 0xff334b, isPlayer);
+    return createFallbackCharacter(isPlayer ? 0x00d2d3 : (isGF ? 0xa55eea : 0xff334b), isPlayer);
 }
 
 // --- LAUNCH SONG ---
@@ -1075,9 +1111,12 @@ async function launchSong(item) {
             Conductor.activeSources.push(source);
         }
 
-        const dadChar = await loadCharacter(item.player2, false);
-        const bfChar = await loadCharacter('bf', true);
+        // 1. Load All 3 Characters: Dad, BF, and GF!
+        const dadChar = await loadCharacter(item.player2, false, false);
+        const bfChar = await loadCharacter('bf', true, false);
+        const gfChar = await loadCharacter('gf', false, true);
 
+        // 2. Load the Security Office Stage with Correct Room Layout
         const stageData = {};
         const stageAssets = ['wall', 'cabinets', 'table', 'light'];
 
@@ -1095,7 +1134,7 @@ async function launchSong(item) {
             }
         }
 
-        playState = new PlayStateScene(item, dadChar, bfChar, stageData);
+        playState = new PlayStateScene(item, dadChar, bfChar, gfChar, stageData);
 
         setTimeout(() => {
             if (playState) {
