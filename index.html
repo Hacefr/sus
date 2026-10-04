@@ -5,22 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vs. Impostor Web Runner (Security DLC)</title>
     
-    <!-- Pixi.js for Hardware-Accelerated WebGL & Shaders -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
-    <!-- JSZip for in-memory mod loading -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-    <!-- Drag & Drop Overlay -->
+    <!-- Drag & Drop Staging Area -->
     <div id="drop-overlay">
         <div class="drop-card">
             <h1>VS. IMPOSTOR WEB RUNNER</h1>
-            <p class="subtitle">Drop your Base Game .zip and Security DLC .zip here</p>
-            <div id="status-box">Waiting for mod files...</div>
-            <p class="hint">You can drop both files together or one after the other!</p>
+            <p class="subtitle">Drop Base Game .zip and Security DLC .zip below</p>
+            
+            <div id="staged-files-list">
+                <!-- Staged files appear here -->
+                <p class="no-files-text">No files added yet. Drop your .zip or .imp files here!</p>
+            </div>
+
+            <div id="status-box" class="hidden">Waiting...</div>
+
+            <button id="start-engine-btn" class="glow-btn hidden" style="margin-top: 15px; font-size: 1.1rem; padding: 12px 28px;">
+                START ENGINE (0 Files)
+            </button>
         </div>
     </div>
 
@@ -34,16 +41,13 @@
             </div>
         </header>
 
-        <div id="song-grid">
-            <!-- Dynamic song cards spawn here -->
-        </div>
+        <div id="song-grid"></div>
     </div>
 
     <!-- WebGL Game Screen -->
-    <div id="game-container" class="hidden">
-        <!-- Pixi.js Canvas attaches here -->
-    </div>
+    <div id="game-container" class="hidden"></div>
 
-    <script src="app.js"></script>
+    <!-- Cache Buster: ?v=2 forces browser to never use old cached JS -->
+    <script src="app.js?v=2"></script>
 </body>
 </html>
